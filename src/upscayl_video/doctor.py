@@ -170,6 +170,36 @@ def check_upscayl(
     return results
 
 
+def check_encoder_smoke(config: Config, logger: Logger) -> list[CheckResult]:
+    from .encode import parse_available_encoders
+
+    available = parse_available_encoders(config.ffmpeg)
+    results: list[CheckResult] = []
+    for name in (
+        "libx264", "libx265", "prores_ks",
+        "h264_nvenc", "hevc_nvenc", "h264_amf", "hevc_amf",
+    ):
+        if name not in available:
+            continue
+        command = [
+            str(config.ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=gray:s=64x64", "-frames:v", "1",
+            "-c:v", name, "-f", "null", "-",
+        ]
+        result = run_command(command, logger=logger, check=False)
+        if result.returncode == 0:
+            results.append(CheckResult(f"smoke_{name}", "OK", "1-frame encode"))
+        else:
+            results.append(
+                CheckResult(
+                    f"smoke_{name}",
+                    "FAIL",
+                    _first_line(result.stderr)[:160],
+                )
+            )
+    return results
+
+
 def check_work_dir(
     config: Config,
     work_dir: Path | None,
@@ -206,6 +236,7 @@ def run_doctor(
     results: list[CheckResult] = []
     results.extend(check_ffmpeg(config, logger))
     results.extend(check_encoders(config, logger))
+    results.extend(check_encoder_smoke(config, logger))
     results.extend(check_work_dir(config, work_dir, logger))
     results.extend(
         check_upscayl(
@@ -232,7 +263,11 @@ def run_doctor(
         for result in results
     )
     required_failed = any(
-        result.status == "FAIL" and result.name in {"ffmpeg", "ffprobe", "libx264"}
+        result.status == "FAIL"
+        and (
+            result.name in {"ffmpeg", "ffprobe", "libx264"}
+            or result.name.startswith("smoke_")
+        )
         for result in results
     )
     if disk_failed:
