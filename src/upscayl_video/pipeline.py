@@ -314,6 +314,11 @@ def run_split(
         processed_duration = end - start
 
         job = Job.create_or_open(config.work_dir, source, logger, create=not dry_run)
+        if any(job.path.glob(".done_chunk_*")):
+            raise ValidationError(
+                f"Job is chunked: {job.job_id}",
+                hint="Resume it with the run command, not split.",
+            )
         if not dry_run:
             logger.set_log_file(job.logs_dir / "split.log")
 
@@ -475,6 +480,11 @@ def run_upscale(
     icd = resolve_icd(effective_config, options.icd)
     results: list[Job] = []
     for job in jobs:
+        if any(job.path.glob(".done_chunk_*")):
+            raise ValidationError(
+                f"Job is chunked: {job.job_id}",
+                hint="Resume it with the run command.",
+            )
         if not job.frames_dir.is_dir():
             raise ValidationError(
                 f"No frames found for job: {job.job_id}",
@@ -1041,6 +1051,11 @@ def run_assemble(
                     hint="Use --force only if the existing upscaled frames still match the source.",
                 )
 
+            if any(job.path.glob(".done_chunk_*")):
+                raise ValidationError(
+                    f"Job is chunked: {job.job_id}",
+                    hint="Resume it with the run command.",
+                )
             media = probe_media(config.ffprobe, job.source_path, logger)
             upscaled_dir = (
                 Path(options.upscaled_dir).expanduser()
@@ -1261,6 +1276,8 @@ def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None
             stage = "done"
         elif job.get("last_error"):
             stage = "failed"
+        elif any(job.path.glob(".done_chunk_*")):
+            stage = "chunk"
         elif upscaled:
             stage = "assemble"
         elif frames:
