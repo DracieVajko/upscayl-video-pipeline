@@ -27,13 +27,22 @@ dependencies in the core repository.
 > workflow in this guide:
 > https://github.com/DracieVajko/upscayl-video-pipeline
 >
-> V1 is a Python CLI; a no-Python PowerShell/bash V2 is planned in the same
-> repository. It keeps each video in its own work folder, accepts Upscayl's
-> suffixed batch output, handles audio/subtitles and MP4/MKV/ProRes, and
-> documents a Windows/NVIDIA Vulkan ICD workaround for the
-> `vkEnumeratePhysicalDevices failed 5` error. Not affiliated with Upscayl.
+> It is a separate folder/tool, not a fork and not affiliated with Upscayl.
+> You put the original videos in the work folder; the script splits them into
+> frames; you batch-upscale the frames in Upscayl's GUI; then the script
+> assembles the frames back into a video with the original audio/subtitles.
+> Upscayl itself is untouched.
 >
-> Feedback is welcome, especially from users on AMD-only machines.
+> V1 (Python) currently covers split, manual GUI upscaling, and assemble:
+> PNG/JPEG frames, resume, MP4/MKV/ProRes, NVIDIA/AMD/CPU encoding, and a
+> documented Windows Vulkan ICD workaround for
+> `vkEnumeratePhysicalDevices failed 5` (an old AMD driver can break
+> enumeration; forcing the NVIDIA ICD works). Automated `upscayl-bin`/`run`
+> and chunking for long videos are the next milestone; a no-Python
+> PowerShell/bash V2 is planned in the same repository.
+>
+> Feedback welcome, especially from AMD-only users. If this belongs in the
+> wiki instead of a comment, I'm happy to turn it into a short docs entry.
 
 Posting this comment is a public side effect. Do it only after the owner of the
 repository approves the final wording.
