@@ -516,6 +516,109 @@ def build_assemble_command(
     return args
 
 
+def build_segment_command(
+    job: Job,
+    frame_set: FrameSet,
+    media: MediaInfo,
+    preset: Preset,
+    encoder: EncoderChoice,
+    options: EncodeOptions,
+    output: Path,
+    *,
+    frame_width: int,
+    frame_height: int,
+) -> list[str]:
+    quality_value = resolve_quality(preset, options.quality, options.crf)
+    encoder = apply_quality(encoder, options.quality)
+    output_dimensions(frame_width, frame_height, options.target_height, options.allow_huge)
+    fps = job.get("fps") or (media.fps_rational if media.fps_den else "30/1")
+    pattern = f"frame_%08d.{frame_set.extension}"
+    args = [
+        "ffmpeg", "-hide_banner", "-nostdin", "-y", "-benchmark",
+        "-framerate", fps, "-start_number", str(frame_set.first_index),
+        "-i", str(frame_set.directory / pattern),
+        "-map", "0:v:0", "-an", "-sn", "-dn",
+        "-frames:v", str(frame_set.count),
+    ]
+    args.extend(video_codec_args(encoder, quality_value, ten_bit=options.ten_bit))
+    filters: list[str] = []
+    color_range = _color_value(job, media.color_range, "color_range")
+    if (color_range or "").lower() == "pc":
+        filters.append("scale=in_range=pc:out_range=tv")
+        color_range = "tv"
+    if options.target_height is not None:
+        filters.append(f"scale=-2:{options.target_height}:flags=lanczos")
+    if filters:
+        args.extend(["-vf", ",".join(filters)])
+    for key, flag in (
+        ("color_primaries", "-color_primaries"),
+        ("color_trc", "-color_trc"),
+        ("colorspace", "-colorspace"),
+    ):
+        value = _color_value(job, getattr(media, key), key)
+        if value:
+            args.extend([flag, value])
+    if color_range:
+        args.extend(["-color_range", color_range])
+    args.extend(["-metadata:s:v:0", "rotate=0"])
+    if preset.codec == "prores":
+        args.extend(["-f", "mov"])
+    else:
+        args.extend(["-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts"])
+    args.append(str(output))
+    return args
+
+
+def build_mux_command(
+    job: Job,
+    media: MediaInfo,
+    preset: Preset,
+    audio_plan: AudioPlan,
+    subtitle_plan: SubtitlePlan,
+    options: EncodeOptions,
+    concat_video: Path,
+    output: Path,
+    duration: float,
+) -> list[str]:
+    has_source = bool(
+        audio_plan.enabled or subtitle_plan.streams or media.chapters > 0
+    )
+    args = ["ffmpeg", "-hide_banner", "-nostdin", "-y", "-benchmark"]
+    args.extend(["-i", str(concat_video)])
+    if has_source:
+        range_start = float(job.get("range_start") or 0.0)
+        if range_start > 0:
+            args.extend(["-ss", f"{range_start:.6f}"])
+        args.extend(["-i", str(job.source_path)])
+    args.extend(["-map", "0:v:0"])
+    if audio_plan.enabled:
+        for stream in audio_plan.streams:
+            args.extend(["-map", f"1:{stream.source_index}"])
+        for index, stream in enumerate(audio_plan.streams):
+            codec = {"copy": "copy", "aac": "aac", "pcm": "pcm_s24le"}[stream.mode]
+            args.extend([f"-c:a:{index}", codec])
+            if stream.mode == "aac":
+                args.extend([f"-b:a:{index}", f"{options.audio_bitrate}k"])
+    else:
+        args.append("-an")
+    if subtitle_plan.streams:
+        for stream in subtitle_plan.streams:
+            args.extend(["-map", f"1:{stream.source_index}"])
+        for index, stream in enumerate(subtitle_plan.streams):
+            args.extend([f"-c:s:{index}", stream.mode])
+    if media.chapters > 0:
+        args.extend(["-map_chapters", "1"])
+    args.extend(["-c:v", "copy"])
+    args.extend(["-t", f"{duration:.6f}", "-map_metadata", "1"])
+    args.extend(["-metadata:s:v:0", "rotate=0"])
+    if preset.container in {"mp4", "mov"}:
+        args.extend(["-movflags", "+faststart"])
+    if preset.codec == "hevc" and preset.container in {"mp4", "mov"}:
+        args.extend(["-tag:v", "hvc1"])
+    args.append(str(output))
+    return args
+
+
 def validate_output(
     ffprobe: Path,
     output: Path,
