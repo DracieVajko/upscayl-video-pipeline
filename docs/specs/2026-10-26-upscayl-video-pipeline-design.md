@@ -276,6 +276,8 @@ upscayl-video-pipeline/
 │   │   └── UpscaylVideo.ps1      # V2 full implementation
 │   └── unix/
 │       └── upscayl-video.sh      # V2 full implementation
+├── input/                          # optional drop folder for input videos
+├── work/                           # default work directory (gitignored)
 ├── tests/
 │   ├── fixtures/
 │   └── ...
@@ -535,6 +537,8 @@ UpscaylVideo.bat run "video.mp4" --preset mp4-hevc
 |---|---|
 | `--work-dir <dir>` | Work directory; default from config |
 | `--config <file>` | Config file; default `config.txt` next to the tool |
+| `--ffmpeg PATH` | FFmpeg executable; overrides config and discovery |
+| `--ffprobe PATH` | ffprobe executable; overrides config and discovery |
 | `--verbose` | Print commands and debug information |
 | `--quiet` | Print errors only; logs still written |
 | `--yes` | Do not ask for confirmation |
@@ -566,11 +570,16 @@ Behavior:
 8. Count and validate frames.
 9. Write `.done_split`.
 
+Time values for `--start`/`--end` accept `SS`, `MM:SS`, or `HH:MM:SS`, with optional fractional seconds. `--fps` accepts a decimal (`29.97`) or a rational (`30000/1001`).
+
 Split does not upscale or encode. It always extracts the full selected range. For long videos that would exceed the disk budget, use `run --chunk-seconds` instead of split-only.
+
+`split --model` and `split --scale` are recorded in `job.txt` for the later upscale; they are validated by `upscale`, not by `split`. `--target-height` does affect the chosen `scale` immediately.
 
 Target height rule:
 
 - If `--target-height N` is set and `--scale` is **not** set, choose the smallest scale in `{2, 3, 4}` such that `height × scale >= N`.
+- If `N <= height`, exit 4: the target must be larger than the source height. Upscaling to the same or a smaller height is not a supported use case.
 - If both are set, use the explicit scale. If `height × scale < N`, exit 4; the tool does not upscale beyond 4x.
 - If `height × scale > N`, the assembler downscales to exactly `N` with Lanczos, preserving aspect ratio and even dimensions.
 - If `N` is odd, round it up to the nearest even number and warn.
@@ -607,13 +616,14 @@ upscayl-video assemble <job...> [--preset mp4-h264|mp4-hevc|mkv-hevc|mov-prores]
   [--crf N] [--audio auto|copy|aac|pcm|none] [--audio-bitrate N]
   [--all-audio] [--subs auto|copy|convert|none] [--10bit]
   [--target-height N] [--cleanup] [--keep-chunks] [--output PATH]
-  [--pick newest|largest] [--verify-frames] [--allow-huge]
+  [--upscaled-dir DIR] [--pick newest|largest]
+  [--verify-frames] [--allow-huge]
 ```
 
 Behavior:
 
 1. Validate the job and frames.
-2. Choose the upscaled frame set. Normalize non-standard names through a temporary `sequence/` directory when needed.
+2. Choose the upscaled frame set: `upscaled/` by default, or `--upscaled-dir DIR` for manual GUI output in a custom location. Normalize non-standard names through a temporary `sequence/` directory when needed.
 3. Choose the encoder and test it if needed.
 4. Build the FFmpeg command.
 5. If the job already has chunk segments from an interrupted chunked `run`, concatenate them. Otherwise encode the whole frame set in one pass. `assemble` does not re-extract or re-upscale frames, so `--chunk-seconds` is a `run` option, not an `assemble` option.
@@ -629,6 +639,7 @@ Output path rules:
 - Without `--output`, the default is `output/<source_stem>_upscaled.<ext>`. If it exists and `--force` is not set, append `_1`, `_2`, ... rather than overwrite.
 - With `--output FILE`, an existing file is an error unless `--force` is set. The tool does not silently append a suffix to an explicit path.
 - With `--output DIR`, the default filename is used inside that directory, with the same collision rule as the default output.
+- `--output FILE` is valid only for a single input/job. With multiple inputs/jobs, use `--output DIR` or omit the option.
 - The output extension is chosen by the preset: `.mp4`, `.mkv`, or `.mov`.
 
 ### 8.6 `run`
@@ -741,6 +752,7 @@ Prompts:
 - Audio (auto/copy/aac/none/all).
 - Subtitles (auto/copy/convert/none).
 - Cleanup after success (y/N, default N).
+- If an HDR source is detected, explain that Upscayl is 8-bit SDR and ask whether to tonemap to SDR (default N; declining aborts that input).
 - Confirmation summary before starting.
 
 Defaults come from `config.txt` and are shown in brackets. The menu is English. Ctrl+C exits cleanly with code 130.
@@ -794,6 +806,7 @@ upscayl-video clean work\clip --all-intermediates
 - `--recursive` scans subdirectories.
 - If no input is given to `run` or `split`, scan `<project>/input`.
 - Skip hidden files, files starting with `.`, and files ending in `_upscaled.<ext>`.
+- Skip anything under the configured work directory, so `--recursive` never picks up chunk segments or previous outputs. Outputs live inside each job's `output/` by default; `--output DIR` can place them elsewhere.
 - Deduplicate by absolute path; sort by name.
 - Case-insensitive extensions.
 
@@ -853,13 +866,13 @@ Details:
   - strong: `hqdn3d=3:3:10:10`
   Denoise is applied before frame output. No sharpening is applied before upscaling.
 - **Tonemap:** `--tonemap` is a split-stage option. For HDR sources, it converts to SDR BT.709 **before** the frames reach Upscayl. The filter chain is applied in this order: tonemap → denoise → pad → format.
-  - Tonemap chain: `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24`
+  - Tonemap chain: `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p`. The final `format=rgb24` (PNG) or `format=yuvj420p` (JPEG) conversion happens after denoise and pad.
   - `--tonemap` and `--10bit` are mutually exclusive; combining them exits 4.
   - After tonemapping, the job's `color_*` fields are set to `bt709`/`bt709`/`bt709`/`tv` and `hdr=0`.
 - **HDR policy:** PQ (`smpte2084`) and HLG (`arib-std-b67`) sources are rejected with exit 4 unless `--tonemap` is set. The tool prints the source transfer function and explains that Upscayl models are 8-bit SDR.
 - **10-bit SDR policy:** 10-bit SDR sources are accepted, but the frames are converted to 8-bit RGB for Upscayl. The tool warns about the precision loss. `--10bit` affects only the final HEVC encode; it cannot recover the lost bits.
-- **PNG:** `-compression_level 3` by default; configurable 0–9. PNG is RGB24.
-- **JPEG:** `-q:v 1` by default (FFmpeg's best JPEG quality); configurable 1–31. JPEG introduces generation loss; the tool warns once per job.
+- **PNG:** `-compression_level 3` by default; configurable 0–9. The filter chain ends with `format=rgb24`, so 10-bit sources produce 8-bit RGB PNGs that Upscayl can read.
+- **JPEG:** `-q:v 1` by default (FFmpeg's best JPEG quality); configurable 1–31. The filter chain ends with `format=yuvj420p`. JPEG introduces generation loss; the tool warns once per job.
 - **Decode:** `cpu`, `gpu`, or `auto`. In `auto`, run a 30-frame benchmark with `-benchmark` for CPU and GPU, parse `rtime`, and choose the faster. If GPU fails, use CPU. Store the result in `job.txt`.
   - NVIDIA: `-hwaccel cuda`
   - Windows AMD/Intel: `-hwaccel d3d11va`
@@ -903,7 +916,22 @@ Rules:
 - JPEG frames use the sample JPEG size; upscaled outputs are PNG by default, so the upscaled estimate uses the PNG sample size when available. If only a JPEG sample exists, multiply by 1.5 to be conservative.
 - Estimates are approximate. The tool prints that fact and checks free space before every upscale batch and before every chunk.
 
-### 9.5 Upscayl discovery
+### 9.5 Dependency discovery
+
+#### FFmpeg and ffprobe
+
+Search order:
+
+1. `--ffmpeg` / `--ffprobe`.
+2. `config.txt:ffmpeg` / `config.txt:ffprobe`.
+3. `PATH`.
+4. The tool directory.
+5. The parent of the tool directory (this covers `C:\FFMPEG\upscayl-video-pipeline` using `C:\FFMPEG\ffmpeg.exe`).
+6. Common install locations: `C:\ffmpeg\bin`, `/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`.
+
+If a configured path is a directory, look for `ffmpeg.exe`/`ffprobe.exe` (Windows) or `ffmpeg`/`ffprobe` (Unix) inside it. If nothing is found, exit 3 with the searched locations.
+
+#### `upscayl-bin`
 
 Search order for `upscayl-bin`:
 
@@ -943,9 +971,15 @@ If the CLI or models are missing:
 - `split` and `assemble` still work.
 - `upscale` and `run` exit 3 with installation guidance.
 
+Execution environment:
+
+- Run `upscayl-bin` with its own directory as the working directory (or add that directory to `PATH`) so bundled DLLs such as `vulkan-1.dll` resolve on Windows.
+- Pass absolute paths for input, output, models, and ICD so the working-directory change does not affect them.
+- On macOS, preserve the app bundle's library path if the CLI requires it; document any `DYLD_*` override in `TROUBLESHOOTING.md`.
+
 ### 9.6 GPU and ICD selection
 
-- Detect NVIDIA with `nvidia-smi` (preferred) or WMI.
+- Detect NVIDIA with `nvidia-smi` (preferred; also check `%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe`) or WMI.
 - On Windows, find the NVIDIA Vulkan ICD JSON:
   `C:\Windows\System32\DriverStore\FileRepository\nv*\nv-vk64.json`.
   Cache the first valid path in `config.txt` or a small cache file.
@@ -1114,6 +1148,18 @@ Quality mapping for `--quality fast|balanced|quality`:
 - `--quality` and `--crf` are mutually exclusive.
 - The default is `--quality balanced`.
 
+Output validation:
+
+- After encoding, run `ffprobe` on the output.
+- Require exactly one video stream.
+- Width and height must match the expected values after `--target-height`.
+- Duration must be greater than 0 and within `max(0.1 s, 1/fps)` of `job.txt:duration`.
+- Frame rate must match `job.txt:fps` within rounding.
+- If audio was requested and the source had audio, an audio stream must be present.
+- If subtitles were selected, the subtitle stream count must match the selection.
+- Pixel format must match the preset (`yuv420p`, `yuv420p10le`, or `yuv422p10le`).
+- On failure, exit 8, keep all intermediates, and log the ffprobe output.
+
 ### 9.12 Audio
 
 - Default: first audio track, `--audio auto`.
@@ -1171,9 +1217,9 @@ HDR and high bit depth:
 
 - HDR is detected when `color_trc` is `smpte2084` (PQ) or `arib-std-b67` (HLG). HDR sources are rejected with exit 4 by default, because Upscayl models are 8-bit SDR and HDR upscaling is not supported.
 - `--tonemap` is a **split-stage** option. It converts HDR to SDR BT.709 before the frames reach Upscayl, using:
-  `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24`
-  The result is SDR; HDR is permanently lost. The job's `color_*` fields are set to BT.709 and `hdr=0`.
-- 10-bit SDR sources are accepted, but they are converted to 8-bit RGB for Upscayl. The tool warns about the precision loss. `--10bit` affects only the final HEVC encode (`yuv420p10le`); it cannot recover the lost bits. `--10bit` is not available for H.264.
+  `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p`
+  The extraction stage then converts to RGB24 for PNG or YUVJ420P for JPEG. The result is SDR; HDR is permanently lost. The job's `color_*` fields are set to BT.709 and `hdr=0`.
+- 10-bit SDR sources are accepted, but they are converted to 8-bit RGB for Upscayl. The tool warns about the precision loss. `--10bit` affects only the final HEVC encode (`yuv420p10le`); it cannot recover the lost bits. `--10bit` is valid only with `mp4-hevc` and `mkv-hevc`; combining it with H.264, ProRes, or `--tonemap` exits 4.
 - `--tonemap` and `--10bit` are mutually exclusive; combining them exits 4.
 - A 10-bit SDR source does **not** require `--tonemap`; it requires only the 8-bit conversion warning.
 
@@ -1407,7 +1453,7 @@ Generate with FFmpeg:
 22. HDR source without `--tonemap`: exit 4 with a clear message. 10-bit SDR source: succeeds with a precision-loss warning.
 23. `run` all-in-one on `clip.mp4`: final output valid.
 24. `run --cleanup`: frames/upscaled/chunks gone, output remains.
-25. `run` on a 20 s clip with `--chunk-seconds 5`: final duration ±0.1 s, audio present, no chunk dirs left (unless `--keep-chunks`).
+25. `run` on a 20 s clip with `--chunk-seconds 10`: final duration ±0.1 s, audio present, no chunk dirs left (unless `--keep-chunks`).
 26. `run` on two videos: two job folders, two outputs, summary table.
 27. `run` continues after one bad video (default) and exits nonzero.
 28. `status` prints the expected stages.
@@ -1458,6 +1504,7 @@ A release is acceptable when:
 | Subtitle conversion loss | Warn; recommend MKV for image/styled subtitles; no burning |
 | HDR/10-bit mismatch | HDR rejected by default; `--tonemap` for SDR; 10-bit SDR downconverted with a warning; `--10bit` only for final HEVC SDR |
 | VFR timing drift | CFR extraction at avg fps; document the conversion |
+| Anamorphic / non-square pixels | The pipeline preserves coded dimensions and outputs square pixels; it does not correct display aspect ratio. Pre-normalize anamorphic sources. |
 | AI artifacts/hallucination | Documentation: upscaling is not restoration; recommend conservative models |
 | GUI filename changes | Numeric-prefix parser; duplicate resolution; manual mode documented |
 | Long paths on Windows | Keep job IDs short; warn above 240 characters; suggest a shorter work dir |
@@ -1656,7 +1703,7 @@ Each phase must be independently testable and committed.
 
 ## Appendix A — Example FFmpeg commands used by the implementation
 
-These are reference shapes, not final code.
+These are reference shapes, not final code. For brevity, the examples use `-map 1:s?` and `-map_chapters 1`; the implementation maps only the subtitle streams selected by section 9.13 and adds chapters only when the source has them.
 
 ### A.1 Split (CPU, PNG)
 
@@ -1670,7 +1717,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   "work\job\frames\frame_%08d.png"
 ```
 
-### A.2 Split a chunk
+### A.2 Chunk extraction (internal to `run`)
 
 ```bat
 ffmpeg -hide_banner -nostdin -y -benchmark ^
