@@ -82,6 +82,24 @@ class UpscaleOptions:
 
 
 @dataclass(frozen=True)
+class RunOptions:
+    split: SplitOptions
+    upscale: UpscaleOptions
+    encode: EncodeOptions
+    cleanup: bool = False
+    stop_on_error: bool = False
+    chunk_seconds: str = "auto"
+
+
+@dataclass(frozen=True)
+class RunResult:
+    input_path: Path
+    job: Job | None
+    output: Path | None
+    error: str | None
+
+
+@dataclass(frozen=True)
 class SplitOptions:
     fps: str | None
     start: str | None
@@ -533,6 +551,52 @@ def run_upscale(
         job.save()
         job.mark_done("upscale")
         results.append(job)
+    return results
+
+
+def run_all(
+    inputs: Sequence[Path],
+    config: Config,
+    options: RunOptions,
+    logger: Logger,
+) -> list[RunResult]:
+    if str(options.chunk_seconds).strip().lower() not in {"0", "auto"}:
+        raise ValidationError(
+            "Chunked run is not enabled in this build yet.",
+            hint="Use --chunk-seconds 0, or wait for the chunking stage.",
+        )
+    results: list[RunResult] = []
+    for input_path in inputs:
+        job: Job | None = None
+        try:
+            job = run_split([input_path], config, options.split, logger)[0]
+            run_upscale([job], config, options.upscale, logger)
+            outputs = run_assemble([job], config, options.encode, logger)
+            output = outputs[0] if outputs else None
+            if options.cleanup:
+                run_clean(
+                    [job],
+                    config,
+                    frames=False,
+                    upscaled=False,
+                    chunks=False,
+                    sequence=False,
+                    batch=False,
+                    include_output=False,
+                    all_intermediates=True,
+                    dry_run=False,
+                    logger=logger,
+                )
+            results.append(RunResult(input_path, job, output, None))
+        except PipelineError as exc:
+            results.append(RunResult(input_path, job, None, str(exc)))
+            if options.stop_on_error:
+                raise
+    logger.info(f"{'INPUT':<32} {'STATUS':<8} OUTPUT")
+    for result in results:
+        status = "OK" if result.error is None else "FAILED"
+        output = str(result.output) if result.output else (result.error or "-")
+        logger.info(f"{result.input_path.name[:32]:<32} {status:<8} {output}")
     return results
 
 
