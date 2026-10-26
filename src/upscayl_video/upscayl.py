@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .errors import CommandError, DependencyError, ValidationError
+from .errors import CommandError, DependencyError, UpscaleError, ValidationError
+from .frames import scan_frames
+from .job import Job
+from .progress import Progress
 from .util import Logger, run_command
 
 
@@ -310,3 +314,159 @@ def smoke_test(
         if not output.is_file() or output.stat().st_size <= 0:
             return False, "Upscayl produced no output file"
     return True, "OK"
+
+
+def missing_indices(source_dir: Path, output_dir: Path, total: int) -> list[int]:
+    source = scan_frames(source_dir)
+    output = scan_frames(output_dir)
+    missing: list[int] = []
+    for index in range(1, total + 1):
+        src = [
+            path
+            for path in source.get(index, [])
+            if path.is_file() and path.stat().st_size > 0
+        ]
+        dst = [
+            path
+            for path in output.get(index, [])
+            if path.is_file() and path.stat().st_size > 0
+        ]
+        if src and not dst:
+            missing.append(index)
+    return missing
+
+
+def _source_for_index(source_dir: Path, index: int) -> Path | None:
+    for path in scan_frames(source_dir).get(index, []):
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    return None
+
+
+def _output_for_stem(output_dir: Path, stem: str) -> Path | None:
+    for path in output_dir.iterdir():
+        if path.is_file() and path.stem == stem and path.stat().st_size > 0:
+            return path
+    return None
+
+
+def _link_or_copy(source: Path, target: Path) -> None:
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+def upscale_frames(
+    job: Job,
+    paths: UpscaylPaths,
+    *,
+    model: str,
+    scale: int,
+    output_dir: Path,
+    tile: int,
+    batch_size: int,
+    gpu: int,
+    icd: Path | None,
+    threads: str,
+    retry: int,
+    logger: Logger,
+    progress: Progress | None = None,
+) -> int:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    total = job.get_int("frame_count")
+    if total <= 0:
+        raise ValidationError(f"Job has no frame_count: {job.job_id}")
+    batch_size = max(1, int(batch_size))
+    tile = max(32, int(tile))
+    attempt = 0
+    batch_number = 1
+    env = {"VK_ICD_FILENAMES": str(icd)} if icd else None
+
+    while True:
+        missing = missing_indices(job.frames_dir, output_dir, total)
+        if not missing:
+            break
+        batch = missing[:batch_size]
+        work = job.path / f"batch_{batch_number:04d}"
+        if work.exists():
+            shutil.rmtree(work)
+        incoming = work / "in"
+        outgoing = work / "out"
+        incoming.mkdir(parents=True)
+        outgoing.mkdir(parents=True)
+        for index in batch:
+            source = _source_for_index(job.frames_dir, index)
+            if source is None:
+                raise ValidationError(f"Missing source frame {index:08d} for job {job.job_id}")
+            _link_or_copy(source, incoming / source.name)
+        command = [
+            str(paths.binary),
+            "-i", str(incoming),
+            "-o", str(outgoing),
+            "-m", str(paths.models_dir),
+            "-n", model,
+            "-s", str(scale),
+            "-g", str(gpu),
+            "-t", str(tile),
+            "-j", threads,
+            "-f", "png",
+            "-c", "0",
+        ]
+        try:
+            run_command(
+                command,
+                logger=logger,
+                env=env,
+                cwd=paths.binary.parent,
+                check=True,
+            )
+            produced: list[Path] = []
+            for source in incoming.iterdir():
+                result = _output_for_stem(outgoing, source.stem)
+                if result is None:
+                    raise UpscaleError(
+                        f"Upscayl produced no output for {source.name}"
+                    )
+                produced.append(result)
+            for result in produced:
+                target = output_dir / result.name
+                if target.exists():
+                    target.unlink()
+                shutil.move(str(result), str(target))
+        except (CommandError, UpscaleError) as exc:
+            if attempt < retry:
+                attempt += 1
+                tile = max(64, tile // 2)
+                batch_size = max(1, batch_size // 2)
+                logger.warn(
+                    f"Upscayl batch failed; retrying with tile={tile}, batch={batch_size}"
+                )
+                shutil.rmtree(work, ignore_errors=True)
+                continue
+            shutil.rmtree(work, ignore_errors=True)
+            detail = getattr(exc, "stderr_tail", "") or str(exc)
+            raise UpscaleError(
+                f"Upscayl failed for job {job.job_id}",
+                hint=detail[:500],
+            ) from exc
+        shutil.rmtree(work, ignore_errors=True)
+        batch_number += 1
+        attempt = 0
+        if progress is not None:
+            progress.update(len(batch))
+            logger.info(progress.line())
+        else:
+            logger.info(f"Upscaled batch of {len(batch)} frames")
+
+    return len(
+        [
+            index
+            for index in range(1, total + 1)
+            if any(
+                path.is_file() and path.stat().st_size > 0
+                for path in scan_frames(output_dir).get(index, [])
+            )
+        ]
+    )
