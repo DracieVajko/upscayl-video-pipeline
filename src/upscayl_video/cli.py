@@ -15,12 +15,14 @@ from .errors import PipelineError, UsageError, ValidationError
 from .menu import run_menu
 from .pipeline import (
     SplitOptions,
+    UpscaleOptions,
     resolve_inputs,
     resolve_jobs,
     run_assemble,
     run_clean,
     run_split,
     run_status,
+    run_upscale,
 )
 from .util import Logger
 
@@ -99,6 +101,25 @@ def build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--verify-frames", action="store_true")
     assemble.add_argument("--allow-huge", action="store_true")
     assemble.add_argument("--tonemap", action="store_true", help=argparse.SUPPRESS)
+
+    upscale = subparsers.add_parser(
+        "upscale",
+        help="Upscale frames with Upscayl CLI",
+        parents=[parent],
+    )
+    upscale.add_argument("jobs", nargs="*", help="Job folders, or --all")
+    upscale.add_argument("--all", action="store_true")
+    upscale.add_argument("--model", default=None)
+    upscale.add_argument("--scale", type=int, choices=(2, 3, 4), default=None)
+    upscale.add_argument("--gpu", type=int, default=None)
+    upscale.add_argument("--tile", default=None)
+    upscale.add_argument("--batch-size", type=int, default=None)
+    upscale.add_argument("--threads", default="1:2:2")
+    upscale.add_argument("--icd", default=None)
+    upscale.add_argument("--upscayl-bin", default=None)
+    upscale.add_argument("--models-dir", default=None)
+    upscale.add_argument("--upscaled-dir", default=None)
+    upscale.add_argument("--retry", type=int, default=1)
 
     subparsers.add_parser(
         "status",
@@ -194,6 +215,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if jobs:
                 logger.info(f"Split complete: {len(jobs)} job(s)")
+            return 0
+
+        if args.command == "upscale":
+            jobs = resolve_jobs(args.jobs, config, all_jobs=args.all)
+            options = UpscaleOptions(
+                model=args.model or config.default_model,
+                scale=args.scale or config.default_scale,
+                gpu=args.gpu if args.gpu is not None else config.gpu,
+                tile=args.tile or config.tile,
+                batch_size=(
+                    args.batch_size
+                    if args.batch_size is not None
+                    else config.batch_size
+                ),
+                threads=args.threads,
+                icd=args.icd,
+                upscayl_bin=Path(args.upscayl_bin) if args.upscayl_bin else None,
+                models_dir=Path(args.models_dir) if args.models_dir else None,
+                upscaled_dir=Path(args.upscaled_dir) if args.upscaled_dir else None,
+                retry=args.retry,
+                force=bool(getattr(args, "force", False)),
+            )
+            result = run_upscale(
+                jobs,
+                config,
+                options,
+                logger,
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            logger.info(f"Upscaled {len(result)} job(s)")
             return 0
 
         if args.command == "assemble":

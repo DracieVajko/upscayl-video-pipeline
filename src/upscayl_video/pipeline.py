@@ -40,6 +40,16 @@ from .frames import (
 )
 from .job import Job, find_jobs
 from .probe import MediaInfo, parse_rational, probe_first_frame_dimensions, probe_media
+from .progress import Progress
+from .upscayl import (
+    detect_vram_mb,
+    discover_upscayl,
+    list_models,
+    resolve_batch_size,
+    resolve_icd,
+    resolve_tile,
+    upscale_frames,
+)
 from .util import (
     Logger,
     ensure_within,
@@ -53,6 +63,22 @@ _VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
     ".wmv", ".flv", ".mpg", ".mpeg", ".ogv",
 }
+
+
+@dataclass(frozen=True)
+class UpscaleOptions:
+    model: str
+    scale: int = 2
+    gpu: int = 0
+    tile: str = "auto"
+    batch_size: int = 0
+    threads: str = "1:2:2"
+    icd: str | None = None
+    upscayl_bin: Path | None = None
+    models_dir: Path | None = None
+    upscaled_dir: Path | None = None
+    retry: int = 1
+    force: bool = False
 
 
 @dataclass(frozen=True)
@@ -401,6 +427,115 @@ def run_split(
     return jobs
 
 
+def run_upscale(
+    jobs: Sequence[Job],
+    config: Config,
+    options: UpscaleOptions,
+    logger: Logger,
+    *,
+    dry_run: bool = False,
+) -> list[Job]:
+    effective_config = dataclasses.replace(
+        config,
+        upscayl_bin=options.upscayl_bin or config.upscayl_bin,
+        models_dir=options.models_dir or config.models_dir,
+    )
+    paths = discover_upscayl(effective_config)
+    models = list_models(paths.models_dir)
+    names = {model.name for model in models}
+    if options.model not in names:
+        raise ValidationError(
+            f"Upscayl model not found: {options.model}",
+            hint="Installed: " + ", ".join(sorted(names)),
+        )
+    tile = resolve_tile(options.tile, detect_vram_mb())
+    icd = resolve_icd(effective_config, options.icd)
+    results: list[Job] = []
+    for job in jobs:
+        if not job.frames_dir.is_dir():
+            raise ValidationError(
+                f"No frames found for job: {job.job_id}",
+                hint="Run split first.",
+            )
+        frame_count = job.get_int("frame_count")
+        if frame_count <= 0:
+            frame_count = count_contiguous_frames(
+                job.frames_dir,
+                job.get("frame_format") or "png",
+            )
+        if frame_count <= 0:
+            raise ValidationError(f"Job has no frames: {job.job_id}")
+        output_dir = (
+            Path(options.upscaled_dir).expanduser()
+            if options.upscaled_dir is not None
+            else job.upscaled_dir
+        )
+        existing = any(
+            path.is_file() for path in output_dir.glob("*")
+        ) if output_dir.is_dir() else False
+        if existing and (
+            (job.get("model") and job.get("model") != options.model)
+            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+        ) and not options.force:
+            raise ValidationError(
+                "Existing upscaled frames use a different model or scale.",
+                hint="Use --force to clear them and upscale again.",
+            )
+        if existing and options.force and (
+            (job.get("model") and job.get("model") != options.model)
+            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+        ):
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            job.clear_stage("upscale")
+            job.set("upscaled_count", 0)
+        width = job.get_int("width", 1920)
+        height = job.get_int("height", 1080)
+        batch_size = resolve_batch_size(options.batch_size, width, height)
+        if dry_run:
+            logger.info(
+                f"Would upscale {job.job_id}: {frame_count} frames with "
+                f"{options.model} at {options.scale}x, tile {tile}, batch {batch_size}"
+            )
+            results.append(job)
+            continue
+        progress = Progress("upscale", frame_count)
+        try:
+            count = upscale_frames(
+                job,
+                paths,
+                model=options.model,
+                scale=options.scale,
+                output_dir=output_dir,
+                tile=tile,
+                batch_size=batch_size,
+                gpu=options.gpu,
+                icd=icd,
+                threads=options.threads,
+                retry=options.retry,
+                logger=logger,
+                progress=progress,
+            )
+        except PipelineError as exc:
+            job.set("last_error", str(exc)[:500])
+            try:
+                job.save()
+            except OSError:
+                pass
+            raise
+        job.set("model", options.model)
+        job.set("scale", options.scale)
+        job.set("tile", tile)
+        job.set("batch_size", batch_size)
+        job.set("upscaled_count", count)
+        job.set("upscaled_dir", str(output_dir))
+        job.set("last_error", "")
+        job.save()
+        job.mark_done("upscale")
+        results.append(job)
+    return results
+
+
 def resolve_jobs(
     args: Sequence[str],
     config: Config,
@@ -556,7 +691,11 @@ def run_assemble(
             upscaled_dir = (
                 Path(options.upscaled_dir).expanduser()
                 if options.upscaled_dir is not None
-                else job.upscaled_dir
+                else (
+                    Path(job.get("upscaled_dir")).expanduser()
+                    if job.get("upscaled_dir")
+                    else job.upscaled_dir
+                )
             )
             if not upscaled_dir.is_dir():
                 raise ValidationError(
