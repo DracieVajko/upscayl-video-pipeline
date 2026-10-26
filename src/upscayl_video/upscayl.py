@@ -382,6 +382,7 @@ def upscale_frames(
     tile = max(32, int(tile))
     attempt = 0
     batch_number = 1
+    eta_warned = False
     env = {"VK_ICD_FILENAMES": str(icd)} if icd else None
 
     while True:
@@ -457,6 +458,17 @@ def upscale_frames(
         if progress is not None:
             progress.update(len(batch))
             logger.info(progress.line())
+            if not eta_warned and progress.eta_seconds > 12 * 3600:
+                eta_warned = True
+                logger.warn(
+                    "Estimated upscale time exceeds 12 hours; use a faster model "
+                    "(upscayl-lite-4x) or process the video in chunks."
+                )
+            elif not eta_warned and progress.eta_seconds > 3600:
+                eta_warned = True
+                logger.warn(
+                    f"Estimated upscale time is {progress.eta_seconds / 3600:.1f} hours."
+                )
         else:
             logger.info(f"Upscaled batch of {len(batch)} frames")
 
