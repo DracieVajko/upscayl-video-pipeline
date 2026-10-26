@@ -83,6 +83,13 @@ class TestSplit(unittest.TestCase):
         self.assertEqual(job.get("colorspace"), "bt709")
         self.assertEqual(job.get("color_range"), "tv")
 
+    def test_resplit_same_settings_reuses_job(self):
+        cfg = load_config(None, overrides={"ffmpeg": self.ffmpeg, "ffprobe": self.ffprobe, "work_dir": str(self.root / "reuse-work")})
+        first = run_split([self.clip], cfg, self.options(), Logger(quiet=True))
+        second = run_split([self.clip], cfg, self.options(), Logger(quiet=True))
+        self.assertEqual(second[0].path, first[0].path)
+        self.assertEqual(second[0].get_int("frame_count"), 30)
+
     def test_dry_run_creates_no_job(self):
         work = self.root / "dry-work"
         cfg = load_config(None, overrides={"ffmpeg": self.ffmpeg, "ffprobe": self.ffprobe, "work_dir": str(work)})

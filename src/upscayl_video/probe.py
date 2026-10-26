@@ -294,7 +294,11 @@ def _last_video_end(
                 duration = float(parts[1])
             except ValueError:
                 duration = 0.0
-        last_end = pts + duration
+        end = pts + duration
+        # Packets are emitted in decode order. With B-frames the last line is
+        # not the last presentation time, so track the maximum end instead.
+        if last_end is None or end > last_end:
+            last_end = end
     return last_end
 
 
@@ -335,7 +339,16 @@ def probe_media(ffprobe: Path, source: Path, logger: Logger) -> MediaInfo:
         ),
         None,
     )
-    if video is not None and not _as_float(video.get("duration"), 0.0):
+    packet_count = 0
+    if video is not None:
+        packet_count = _as_int(
+            video.get("nb_read_packets") or video.get("nb_frames")
+        )
+    if (
+        video is not None
+        and not _as_float(video.get("duration"), 0.0)
+        and not packet_count
+    ):
         format_duration = _as_float((data.get("format") or {}).get("duration"), 0.0)
         end = _last_video_end(ffprobe, source, format_duration, logger)
         if end and end > 0:

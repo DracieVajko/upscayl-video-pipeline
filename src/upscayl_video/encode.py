@@ -396,14 +396,48 @@ def output_dimensions(
     return output_width, output_height
 
 
-def _color_value(job: Job, media_value: str | None, key: str) -> str | None:
+_COLOR_PRIMARIES = {
+    "bt709", "bt470m", "bt470bg", "smpte170m", "smpte240m", "film",
+    "bt2020", "smpte428", "smpte431", "smpte432", "jedec-p22", "ebu3213",
+}
+_COLOR_TRANSFERS = {
+    "bt709", "gamma22", "gamma28", "smpte170m", "smpte240m", "linear",
+    "log100", "log316", "iec61966-2-4", "bt1361e", "iec61966-2-1",
+    "bt2020-10", "bt2020-12", "smpte2084", "smpte428", "arib-std-b67",
+}
+_COLOR_SPACES = {
+    "bt709", "fcc", "bt470bg", "smpte170m", "smpte240m", "ycgco",
+    "bt2020nc", "bt2020c", "smpte2085", "chroma-derived-nc",
+    "chroma-derived-c", "ictcp",
+}
+_COLOR_SETS = {
+    "color_primaries": _COLOR_PRIMARIES,
+    "color_trc": _COLOR_TRANSFERS,
+    "colorspace": _COLOR_SPACES,
+}
+
+
+def _color_value(
+    job: Job,
+    media_value: str | None,
+    key: str,
+    *,
+    height: int,
+) -> str | None:
     value = job.get(key) or media_value
+    default = "bt709" if height >= 720 else "smpte170m"
     if value is None:
-        return None
+        return "tv" if key == "color_range" else default
     text = str(value).strip()
     if not text or text.lower() == "unknown":
-        return None
-    return text
+        return "tv" if key == "color_range" else default
+    lower = text.lower()
+    if key == "color_range":
+        return lower if lower in {"tv", "pc"} else "tv"
+    if lower in _COLOR_SETS[key]:
+        return lower
+    # RGB sources report gbr, which is not a valid YUV output matrix.
+    return default
 
 
 def build_assemble_command(
@@ -422,7 +456,7 @@ def build_assemble_command(
 ) -> list[str]:
     quality_value = resolve_quality(preset, options.quality, options.crf)
     encoder = apply_quality(encoder, options.quality)
-    output_dimensions(
+    _, expected_height = output_dimensions(
         frame_width,
         frame_height,
         options.target_height,
@@ -478,7 +512,7 @@ def build_assemble_command(
     args.extend(video_codec_args(encoder, quality_value, ten_bit=options.ten_bit))
 
     filters: list[str] = []
-    color_range = _color_value(job, media.color_range, "color_range")
+    color_range = _color_value(job, media.color_range, "color_range", height=expected_height)
     if (color_range or "").lower() == "pc":
         filters.append("scale=in_range=pc:out_range=tv")
         color_range = "tv"
@@ -492,7 +526,7 @@ def build_assemble_command(
         ("color_trc", "-color_trc"),
         ("colorspace", "-colorspace"),
     ):
-        value = _color_value(job, getattr(media, key), key)
+        value = _color_value(job, getattr(media, key), key, height=expected_height)
         if value:
             args.extend([flag, value])
     if color_range:
@@ -531,7 +565,9 @@ def build_segment_command(
 ) -> list[str]:
     quality_value = resolve_quality(preset, options.quality, options.crf)
     encoder = apply_quality(encoder, options.quality)
-    output_dimensions(frame_width, frame_height, options.target_height, options.allow_huge)
+    _, expected_height = output_dimensions(
+        frame_width, frame_height, options.target_height, options.allow_huge
+    )
     fps = job.get("fps") or (media.fps_rational if media.fps_den else "30/1")
     pattern = f"frame_%08d.{frame_set.extension}"
     args = [
@@ -543,7 +579,7 @@ def build_segment_command(
     ]
     args.extend(video_codec_args(encoder, quality_value, ten_bit=options.ten_bit))
     filters: list[str] = []
-    color_range = _color_value(job, media.color_range, "color_range")
+    color_range = _color_value(job, media.color_range, "color_range", height=expected_height)
     if (color_range or "").lower() == "pc":
         filters.append("scale=in_range=pc:out_range=tv")
         color_range = "tv"
@@ -556,7 +592,7 @@ def build_segment_command(
         ("color_trc", "-color_trc"),
         ("colorspace", "-colorspace"),
     ):
-        value = _color_value(job, getattr(media, key), key)
+        value = _color_value(job, getattr(media, key), key, height=expected_height)
         if value:
             args.extend([flag, value])
     if color_range:
@@ -641,6 +677,10 @@ def normalize_color_tags(
     temp = path.with_name(f"{path.stem}.colorfix{path.suffix}")
     command = [
         str(ffmpeg), "-hide_banner", "-nostdin", "-y", "-i", str(path),
+        # Copy video, audio, subtitles, and attachments, but skip arbitrary
+        # data streams: some MOV/MP4 muxers reject them (for example a text
+        # data track written by ProRes recording tools).
+        "-map", "0:v", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?",
         "-c", "copy",
         "-color_primaries", "bt709", "-color_trc", "bt709",
         "-colorspace", "bt709", "-color_range", "tv",
@@ -786,3 +826,4 @@ def plan_subtitles(
             + f" that cannot be stored in {preset.container}; use mkv-hevc to keep them."
         )
     return SubtitlePlan(tuple(plans), tuple(dropped))
+

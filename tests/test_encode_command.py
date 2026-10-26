@@ -166,5 +166,35 @@ class TestCommand(unittest.TestCase):
                 )
 
 
+class TestColorFallback(unittest.TestCase):
+    def test_rgb_source_maps_gbr_to_yuv_matrix(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = make_job(td)
+            media = make_media_info(
+                Path("input.mkv"),
+                pix_fmt="bgr0",
+                color_primaries=None,
+                color_trc=None,
+                colorspace="gbr",
+                color_range="pc",
+            )
+            frame_set = FrameSet(
+                Path("frames"), "png", (1,),
+                (Path("frames/frame_00000001.png"),),
+            )
+            args = build_assemble_command(
+                job, frame_set, media, PRESETS["mp4-h264"],
+                EncoderChoice("cpu", "libx264", ()),
+                AudioPlan((), False), SubtitlePlan((), ()),
+                EncodeOptions(encoder="cpu"), Path("out.mp4"),
+                frame_width=320, frame_height=240,
+            )
+            self.assertIn("smpte170m", args)
+            self.assertNotIn("gbr", args)
+            self.assertIn("scale=in_range=pc:out_range=tv", args)
+            index = args.index("-color_range")
+            self.assertEqual(args[index + 1], "tv")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -229,7 +229,9 @@ def _settings_differences(job: Job, media: MediaInfo, start: float, end: float |
         "frame_format": options.format.lower(),
         "fps": media.fps_rational,
         "range_start": f"{start:.3f}",
-        "range_end": "" if end is None else f"{end:.3f}",
+        # Match what run_split stores: range_end is empty when the user did
+        # not pass --end, even though the effective end is the source duration.
+        "range_end": "" if options.end is None else f"{end:.3f}",
         "denoise": options.denoise,
         "tonemap": "1" if options.tonemap else "0",
         "png_compression": str(options.png_compression),
