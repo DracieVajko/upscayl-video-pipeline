@@ -10,10 +10,22 @@ video → frames → Upscayl → frames → video (with audio, subtitles, chapte
 assemble work end-to-end. Automated `upscale`/`run`, chunking, and the
 no-Python V2 implementation are the next plans.
 
+## Repository layout
+
+- **`/` (root): V1 core**, Python 3.10+ CLI and launchers. This is the working
+  implementation today.
+- **`v2/`: V2 native** (PowerShell 5.1+ and bash 3.2+), planned full-parity
+  implementation. Not implemented yet; see [`v2/README.md`](v2/README.md).
+- **`docs/`**: design spec, plans, usage, troubleshooting, and upstream notes.
+
+Both versions share the same `job.txt` folder contract, so users can choose
+the implementation that fits their machine without changing workflows.
+
 - Design: [`docs/specs/2026-10-26-upscayl-video-pipeline-design.md`](docs/specs/2026-10-26-upscayl-video-pipeline-design.md)
 - V1 core plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md)
 - Usage: [`docs/USAGE.md`](docs/USAGE.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+- Mentioning it to Upscayl: [`docs/UPSTREAM.md`](docs/UPSTREAM.md)
 
 ## What works now
 
