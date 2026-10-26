@@ -1,6 +1,6 @@
 # Upscayl Video Pipeline — Design Specification
 
-- **Status:** Proposed — awaiting user review
+- **Status:** Approved — 2026-10-26
 - **Date:** 2026-10-26
 - **Author:** DracieVajko
 - **License:** MIT for this project. Upscayl is a separate AGPL-3.0 project; its models are not distributed with this tool.
