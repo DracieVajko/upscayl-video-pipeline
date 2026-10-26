@@ -19,6 +19,15 @@ All notable changes to this project will be documented here.
 - Windows `.bat` and Unix `.sh` launchers.
 - Usage and troubleshooting documentation.
 
+### Validated
+
+- 119 automated tests pass.
+- 1080p end-to-end run: 90 frames, CPU decode (auto benchmark), NVENC
+  H.264, AAC audio copy, 3.000 s output, 90 decoded frames.
+- Manual workflow with spaces and Slovak diacritics.
+- Odd dimensions, 10-bit SDR, MKV/MP3/subtitles, ProRes, MP4 HEVC, and
+  no-audio outputs.
+
 ### Not yet
 
 - Automated `upscale` and `run` commands.
