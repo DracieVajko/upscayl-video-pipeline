@@ -1,0 +1,9 @@
+work/
+input/
+output/
+*.log
+batch_*/
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc

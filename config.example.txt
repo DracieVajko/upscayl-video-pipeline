@@ -1,0 +1,22 @@
+# Upscayl Video Pipeline configuration
+# Copy this file to config.txt and adjust as needed.
+# Values may contain spaces. Do not quote them.
+
+ffmpeg=ffmpeg
+ffprobe=ffprobe
+upscayl_bin=auto
+models_dir=auto
+work_dir=work
+default_model=upscayl-standard-4x
+default_scale=2
+default_preset=mp4-h264
+default_encoder=auto
+default_audio=auto
+default_subs=auto
+tile=auto
+batch_size=100
+gpu=0
+icd=auto
+max_work_gb=40
+min_free_gb=5
+cleanup=0
