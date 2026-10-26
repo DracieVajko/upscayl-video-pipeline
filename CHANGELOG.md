@@ -49,12 +49,15 @@ All notable changes to this project will be documented here.
 
 ### Validated
 
-- 119 automated tests pass.
-- 1080p end-to-end run: 90 frames, CPU decode (auto benchmark), NVENC
-  H.264, AAC audio copy, 3.000 s output, 90 decoded frames.
-- Manual workflow with spaces and Slovak diacritics.
-- Odd dimensions, 10-bit SDR, MKV/MP3/subtitles, ProRes, MP4 HEVC, and
-  no-audio outputs.
+- 170 automated tests pass.
+- All three local example clips fully split and fully assembled: 225, 556,
+  and 2,495 frames; durations 7.53 s, 18.53 s, and 83.15 s; AAC audio; BT.709.
+- Real Upscayl `upscayl-lite-4x` runs on a 1-second window of each clip: 2×
+  output, correct frame counts and audio.
+- Real chunked run on an 18.5 s clip (`--chunk-seconds 10`): 2 chunks, 556
+  frames, 3104×4128, correct audio, chunks cleaned.
+- `doctor` green including the Upscayl smoke test and all encoder smoke tests.
+- See `docs/VALIDATION.md` for exact results and the remaining gaps.
 
 ### Not yet
 

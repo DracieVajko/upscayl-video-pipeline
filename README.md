@@ -26,6 +26,7 @@ the implementation that fits their machine without changing workflows.
 - V1 automation plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-automation.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-automation.md)
 - Usage: [`docs/USAGE.md`](docs/USAGE.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+- Validation record: [`docs/VALIDATION.md`](docs/VALIDATION.md)
 - Mentioning it to Upscayl: [`docs/UPSTREAM.md`](docs/UPSTREAM.md)
 
 ## What works now
