@@ -19,6 +19,16 @@ All notable changes to this project will be documented here.
 - Windows `.bat` and Unix `.sh` launchers.
 - Usage and troubleshooting documentation.
 
+### Added
+
+- Automated `upscayl-bin` upscaling in resumable batches, with model/ICD/tile
+  discovery and VRAM-based batch sizing.
+- `run` all-in-one command for one or many videos.
+- Time-based chunking for long videos, per-chunk encode, concat, and audio mux.
+- Upscayl smoke test and encoder smoke tests in `doctor`.
+- Full nine-option interactive menu.
+- Progress/ETA for the Upscayl stage and long-run warnings.
+
 ### Fixed
 
 - Refuse to write the output over the source video; enforce the preset extension.

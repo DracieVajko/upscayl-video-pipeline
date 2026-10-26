@@ -14,13 +14,17 @@ from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError, UsageError, ValidationError
 from .menu import run_menu
 from .pipeline import (
+    RunOptions,
     SplitOptions,
+    UpscaleOptions,
     resolve_inputs,
     resolve_jobs,
+    run_all,
     run_assemble,
     run_clean,
     run_split,
     run_status,
+    run_upscale,
 )
 from .util import Logger
 
@@ -99,6 +103,70 @@ def build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--verify-frames", action="store_true")
     assemble.add_argument("--allow-huge", action="store_true")
     assemble.add_argument("--tonemap", action="store_true", help=argparse.SUPPRESS)
+
+    upscale = subparsers.add_parser(
+        "upscale",
+        help="Upscale frames with Upscayl CLI",
+        parents=[parent],
+    )
+    upscale.add_argument("jobs", nargs="*", help="Job folders, or --all")
+    upscale.add_argument("--all", action="store_true")
+    upscale.add_argument("--model", default=None)
+    upscale.add_argument("--scale", type=int, choices=(2, 3, 4), default=None)
+    upscale.add_argument("--gpu", type=int, default=None)
+    upscale.add_argument("--tile", default=None)
+    upscale.add_argument("--batch-size", type=int, default=None)
+    upscale.add_argument("--threads", default="1:2:2")
+    upscale.add_argument("--icd", default=None)
+    upscale.add_argument("--upscayl-bin", default=None)
+    upscale.add_argument("--models-dir", default=None)
+    upscale.add_argument("--upscaled-dir", default=None)
+    upscale.add_argument("--retry", type=int, default=1)
+
+    run = subparsers.add_parser(
+        "run",
+        help="Split, upscale, and assemble in one pass",
+        parents=[parent],
+    )
+    run.add_argument("inputs", nargs="*")
+    run.add_argument("--fps", default=None)
+    run.add_argument("--start", default=None)
+    run.add_argument("--end", default=None)
+    run.add_argument("--format", choices=("png", "jpg"), default="png")
+    run.add_argument("--jpeg-quality", type=int, default=1)
+    run.add_argument("--png-compression", type=int, default=3)
+    run.add_argument("--denoise", choices=("none", "light", "medium", "strong"), default="none")
+    run.add_argument("--tonemap", action="store_true")
+    run.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="auto")
+    run.add_argument("--scale", type=int, choices=(2, 3, 4), default=None)
+    run.add_argument("--target-height", type=int, default=None)
+    run.add_argument("--model", default=None)
+    run.add_argument("--verify-frames", action="store_true")
+    run.add_argument("--recursive", action="store_true")
+    run.add_argument("--gpu", type=int, default=None)
+    run.add_argument("--tile", default=None)
+    run.add_argument("--batch-size", type=int, default=None)
+    run.add_argument("--threads", default="1:2:2")
+    run.add_argument("--icd", default=None)
+    run.add_argument("--upscayl-bin", default=None)
+    run.add_argument("--models-dir", default=None)
+    run.add_argument("--upscaled-dir", default=None)
+    run.add_argument("--retry", type=int, default=1)
+    run.add_argument("--preset", choices=tuple(PRESETS), default=None)
+    run.add_argument("--encoder", choices=("auto", "nvidia", "amd", "cpu"), default=None)
+    run.add_argument("--quality", choices=("fast", "balanced", "quality"), default="balanced")
+    run.add_argument("--crf", type=int, default=None)
+    run.add_argument("--audio", choices=("auto", "copy", "aac", "pcm", "none"), default=None)
+    run.add_argument("--audio-bitrate", type=int, default=192)
+    run.add_argument("--all-audio", action="store_true")
+    run.add_argument("--subs", choices=("auto", "copy", "convert", "none"), default=None)
+    run.add_argument("--10bit", dest="ten_bit", action="store_true")
+    run.add_argument("--cleanup", action="store_true")
+    run.add_argument("--output", default=None)
+    run.add_argument("--pick", choices=("error", "newest", "largest"), default="error")
+    run.add_argument("--allow-huge", action="store_true")
+    run.add_argument("--stop-on-error", action="store_true")
+    run.add_argument("--chunk-seconds", default="auto")
 
     subparsers.add_parser(
         "status",
@@ -195,6 +263,106 @@ def main(argv: Sequence[str] | None = None) -> int:
             if jobs:
                 logger.info(f"Split complete: {len(jobs)} job(s)")
             return 0
+
+        if args.command == "upscale":
+            jobs = resolve_jobs(args.jobs, config, all_jobs=args.all)
+            options = UpscaleOptions(
+                model=args.model or config.default_model,
+                scale=args.scale or config.default_scale,
+                gpu=args.gpu if args.gpu is not None else config.gpu,
+                tile=args.tile or config.tile,
+                batch_size=(
+                    args.batch_size
+                    if args.batch_size is not None
+                    else config.batch_size
+                ),
+                threads=args.threads,
+                icd=args.icd,
+                upscayl_bin=Path(args.upscayl_bin) if args.upscayl_bin else None,
+                models_dir=Path(args.models_dir) if args.models_dir else None,
+                upscaled_dir=Path(args.upscaled_dir) if args.upscaled_dir else None,
+                retry=args.retry,
+                force=bool(getattr(args, "force", False)),
+            )
+            result = run_upscale(
+                jobs,
+                config,
+                options,
+                logger,
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            logger.info(f"Upscaled {len(result)} job(s)")
+            return 0
+
+        if args.command == "run":
+            inputs = resolve_inputs(args.inputs, config, recursive=args.recursive)
+            split = SplitOptions(
+                fps=args.fps,
+                start=args.start,
+                end=args.end,
+                format=args.format,
+                jpeg_quality=args.jpeg_quality,
+                png_compression=args.png_compression,
+                denoise=args.denoise,
+                tonemap=args.tonemap,
+                decode=args.decode,
+                scale=args.scale,
+                target_height=args.target_height,
+                model=args.model or config.default_model,
+                verify_frames=args.verify_frames,
+                recursive=args.recursive,
+                force=bool(getattr(args, "force", False)),
+            )
+            upscale = UpscaleOptions(
+                model=args.model or config.default_model,
+                scale=args.scale or config.default_scale,
+                gpu=args.gpu if args.gpu is not None else config.gpu,
+                tile=args.tile or config.tile,
+                batch_size=(
+                    args.batch_size
+                    if args.batch_size is not None
+                    else config.batch_size
+                ),
+                threads=args.threads,
+                icd=args.icd,
+                upscayl_bin=Path(args.upscayl_bin) if args.upscayl_bin else None,
+                models_dir=Path(args.models_dir) if args.models_dir else None,
+                upscaled_dir=Path(args.upscaled_dir) if args.upscaled_dir else None,
+                retry=args.retry,
+                force=bool(getattr(args, "force", False)),
+            )
+            encode = EncodeOptions(
+                preset=args.preset or config.default_preset,
+                encoder=args.encoder or config.default_encoder,
+                quality=args.quality,
+                crf=args.crf,
+                audio=args.audio,
+                audio_bitrate=args.audio_bitrate,
+                all_audio=args.all_audio,
+                subs=args.subs,
+                ten_bit=args.ten_bit,
+                cleanup=args.cleanup,
+                output=Path(args.output) if args.output else None,
+                pick=args.pick,
+                verify_frames=args.verify_frames,
+                allow_huge=args.allow_huge,
+                force=bool(getattr(args, "force", False)),
+            )
+            results = run_all(
+                inputs,
+                config,
+                RunOptions(
+                    split=split,
+                    upscale=upscale,
+                    encode=encode,
+                    cleanup=args.cleanup,
+                    stop_on_error=args.stop_on_error,
+                    chunk_seconds=args.chunk_seconds,
+                ),
+                logger,
+            )
+            failed = [result for result in results if result.error]
+            return 1 if failed else 0
 
         if args.command == "assemble":
             if args.tonemap:

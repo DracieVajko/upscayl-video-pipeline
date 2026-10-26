@@ -95,6 +95,24 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--all-intermediates", result.stdout)
 
+    def test_upscale_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "upscale", "--help"],
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--tile", result.stdout)
+
+    def test_run_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "run", "--help"],
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--chunk-seconds", result.stdout)
+
     def test_assemble_help(self):
         result = subprocess.run(
             [sys.executable, str(LAUNCHER), "assemble", "--help"],

@@ -6,9 +6,9 @@ A local FFmpeg + Upscayl pipeline for upscaling video:
 video → frames → Upscayl → frames → video (with audio, subtitles, chapters)
 ```
 
-**Status:** V1 core implemented. Split, manual Upscayl GUI upscaling, and
-assemble work end-to-end. Automated `upscale`/`run`, chunking, and the
-no-Python V2 implementation are the next plans.
+**Status:** V1 implemented. Split, manual GUI or automated `upscayl-bin`
+upscaling, all-in-one `run`, chunked processing, and assemble work end-to-end.
+The no-Python V2 implementation is next (`v2/`).
 
 ## Repository layout
 
@@ -34,22 +34,28 @@ the implementation that fits their machine without changing workflows.
 - Split to PNG or JPEG with optional denoise, HDR tonemapping, CFR conversion,
   resume, and a sample-based disk estimate.
 - Manual batch upscaling in the Upscayl GUI.
+- Automated `upscayl-bin` upscaling in bounded, resumable batches.
+- All-in-one `run`: split → upscale → assemble, one or many videos.
+- Time-based chunking for long videos, with resume and cleanup.
 - Assembling standard or Upscayl-suffixed frame names, including one-level
   output subfolders.
 - MP4 H.264, MP4 HEVC, MKV HEVC, and MOV ProRes.
 - NVIDIA NVENC, AMD AMF, or CPU encoding, with automatic fallback.
 - Audio copy/AAC/PCM/none, multiple tracks on request, subtitles, chapters.
-- `doctor`, `status`, `clean`, `--dry-run`, and a basic interactive menu.
+- `doctor`, `upscale`, `run`, `status`, `clean`, `--dry-run`, and the full
+  nine-option menu.
+- Windows/NVIDIA Vulkan ICD workaround for the AMD enumeration bug.
 - Paths with spaces and Unicode.
 
-Not in this build: automated `upscayl-bin` invocation, `run`, chunking,
-the full menu, and V2 PowerShell/bash parity.
+Not yet: V2 PowerShell/bash parity. `run --chunk-seconds auto` currently uses
+the non-chunked path; use an explicit value such as `60` for chunking.
 
 ## Requirements
 
-- Python 3.10+ (V1 core).
+- Python 3.10+ (V1).
 - FFmpeg and ffprobe.
-- Upscayl (for the manual GUI stage; not required by the CLI itself).
+- Upscayl with `upscayl-bin` and models for `upscale`/`run`; split/assemble and
+  the manual GUI workflow do not require the CLI.
 
 ## Quick start
 
@@ -70,6 +76,12 @@ upscayl-video split "clip.mp4" --work-dir "D:\UpscaylVideo"
 
 # 3. Assemble
 upscayl-video assemble "D:\UpscaylVideo\clip" --preset mp4-h264 --encoder auto
+
+# Or do everything automatically with Upscayl CLI
+upscayl-video run "clip.mp4" --model upscayl-lite-4x --scale 2 --preset mp4-h264
+
+# Long video: chunked run (explicit chunk length)
+upscayl-video run "movie.mkv" --chunk-seconds 60 --preset mkv-hevc --cleanup
 ```
 
 See [`docs/USAGE.md`](docs/USAGE.md) for every command and flag.

@@ -136,6 +136,7 @@ class Job:
                 "source": str(source),
                 "created": _now(),
                 "frame_pattern": "",
+                "upscaled_dir": "",
                 "frame_count": "0",
                 "upscaled_count": "0",
                 "chunk_seconds": "0",

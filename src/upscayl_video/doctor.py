@@ -9,6 +9,14 @@ from pathlib import Path
 
 from .config import Config
 from .disk import free_bytes
+from .errors import DependencyError
+from .upscayl import (
+    discover_upscayl,
+    find_nvidia_icd,
+    list_models,
+    resolve_icd,
+    smoke_test,
+)
 from .util import Logger, human_bytes, run_command
 
 
@@ -95,6 +103,103 @@ def check_encoders(config: Config, logger: Logger) -> list[CheckResult]:
     return results
 
 
+def check_upscayl(
+    config: Config,
+    *,
+    skip_smoke: bool,
+    logger: Logger,
+) -> list[CheckResult]:
+    try:
+        paths = discover_upscayl(config)
+    except DependencyError as exc:
+        return [CheckResult("upscayl", "WARN", str(exc))]
+    results = [
+        CheckResult("upscayl", "OK", str(paths.binary)),
+        CheckResult("upscayl_models", "OK", str(paths.models_dir)),
+    ]
+    try:
+        models = list_models(paths.models_dir)
+        results.append(
+            CheckResult("upscayl_models", "OK", f"{len(models)} model(s)")
+        )
+    except DependencyError as exc:
+        results.append(CheckResult("upscayl_models", "WARN", str(exc)))
+        return results
+    if skip_smoke:
+        results.append(CheckResult("upscayl_smoke", "OK", "skipped"))
+        return results
+
+    try:
+        icd = resolve_icd(config)
+    except Exception as exc:
+        results.append(CheckResult("upscayl_icd", "WARN", str(exc)))
+        icd = None
+    ok, detail = smoke_test(
+        paths,
+        models[0].name,
+        128,
+        icd,
+        logger,
+        ffmpeg=config.ffmpeg,
+    )
+    if not ok and icd is None:
+        nvidia = find_nvidia_icd()
+        if nvidia is not None:
+            retry_ok, retry_detail = smoke_test(
+                paths,
+                models[0].name,
+                128,
+                nvidia,
+                logger,
+                ffmpeg=config.ffmpeg,
+            )
+            if retry_ok:
+                results.append(
+                    CheckResult(
+                        "upscayl_smoke",
+                        "FAIL",
+                        "fails with the default Vulkan ICD; forcing the NVIDIA ICD works. "
+                        "Set icd=<nv-vk64.json> or update the AMD driver.",
+                    )
+                )
+                return results
+            detail = retry_detail
+    results.append(
+        CheckResult("upscayl_smoke", "OK" if ok else "FAIL", detail)
+    )
+    return results
+
+
+def check_encoder_smoke(config: Config, logger: Logger) -> list[CheckResult]:
+    from .encode import parse_available_encoders
+
+    available = parse_available_encoders(config.ffmpeg)
+    results: list[CheckResult] = []
+    for name in (
+        "libx264", "libx265", "prores_ks",
+        "h264_nvenc", "hevc_nvenc", "h264_amf", "hevc_amf",
+    ):
+        if name not in available:
+            continue
+        command = [
+            str(config.ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=gray:s=64x64", "-frames:v", "1",
+            "-c:v", name, "-f", "null", "-",
+        ]
+        result = run_command(command, logger=logger, check=False)
+        if result.returncode == 0:
+            results.append(CheckResult(f"smoke_{name}", "OK", "1-frame encode"))
+        else:
+            results.append(
+                CheckResult(
+                    f"smoke_{name}",
+                    "FAIL",
+                    _first_line(result.stderr)[:160],
+                )
+            )
+    return results
+
+
 def check_work_dir(
     config: Config,
     work_dir: Path | None,
@@ -131,14 +236,13 @@ def run_doctor(
     results: list[CheckResult] = []
     results.extend(check_ffmpeg(config, logger))
     results.extend(check_encoders(config, logger))
+    results.extend(check_encoder_smoke(config, logger))
     results.extend(check_work_dir(config, work_dir, logger))
-    results.append(
-        CheckResult(
-            "upscayl",
-            "INFO",
-            "checks are added with the automated upscale stage"
-            if not skip_upscayl_smoke
-            else "smoke test skipped",
+    results.extend(
+        check_upscayl(
+            config,
+            skip_smoke=skip_upscayl_smoke,
+            logger=logger,
         )
     )
 
@@ -154,12 +258,22 @@ def run_doctor(
     disk_failed = any(
         result.name == "work_dir" and result.status == "FAIL" for result in results
     )
+    upscayl_failed = any(
+        result.name.startswith("upscayl") and result.status == "FAIL"
+        for result in results
+    )
     required_failed = any(
-        result.status == "FAIL" and result.name in {"ffmpeg", "ffprobe", "libx264"}
+        result.status == "FAIL"
+        and (
+            result.name in {"ffmpeg", "ffprobe", "libx264"}
+            or result.name.startswith("smoke_")
+        )
         for result in results
     )
     if disk_failed:
         return 5
     if required_failed:
         return 3
+    if upscayl_failed:
+        return 6
     return 0

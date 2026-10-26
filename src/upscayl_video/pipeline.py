@@ -13,9 +13,12 @@ from typing import Sequence
 
 from .config import Config
 from .disk import check_estimate, estimate_disk, free_bytes, sample_frame_bytes
+from .chunking import concat_segments, plan_chunks
 from .encode import (
     EncodeOptions,
     build_assemble_command,
+    build_mux_command,
+    build_segment_command,
     encoder_candidates,
     output_dimensions,
     plan_audio,
@@ -25,6 +28,7 @@ from .encode import (
 )
 from .errors import (
     CommandError,
+    DiskSpaceError,
     EncodeError,
     PipelineError,
     UsageError,
@@ -32,6 +36,7 @@ from .errors import (
 )
 from .frames import (
     build_sequence,
+    build_split_command,
     count_contiguous_frames,
     extract_frames,
     frame_pattern,
@@ -40,6 +45,16 @@ from .frames import (
 )
 from .job import Job, find_jobs
 from .probe import MediaInfo, parse_rational, probe_first_frame_dimensions, probe_media
+from .progress import Progress
+from .upscayl import (
+    detect_vram_mb,
+    discover_upscayl,
+    list_models,
+    resolve_batch_size,
+    resolve_icd,
+    resolve_tile,
+    upscale_frames,
+)
 from .util import (
     Logger,
     ensure_within,
@@ -53,6 +68,40 @@ _VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
     ".wmv", ".flv", ".mpg", ".mpeg", ".ogv",
 }
+
+
+@dataclass(frozen=True)
+class UpscaleOptions:
+    model: str
+    scale: int = 2
+    gpu: int = 0
+    tile: str = "auto"
+    batch_size: int = 0
+    threads: str = "1:2:2"
+    icd: str | None = None
+    upscayl_bin: Path | None = None
+    models_dir: Path | None = None
+    upscaled_dir: Path | None = None
+    retry: int = 1
+    force: bool = False
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    split: SplitOptions
+    upscale: UpscaleOptions
+    encode: EncodeOptions
+    cleanup: bool = False
+    stop_on_error: bool = False
+    chunk_seconds: str = "auto"
+
+
+@dataclass(frozen=True)
+class RunResult:
+    input_path: Path
+    job: Job | None
+    output: Path | None
+    error: str | None
 
 
 @dataclass(frozen=True)
@@ -265,6 +314,11 @@ def run_split(
         processed_duration = end - start
 
         job = Job.create_or_open(config.work_dir, source, logger, create=not dry_run)
+        if any(job.path.glob(".done_chunk_*")):
+            raise ValidationError(
+                f"Job is chunked: {job.job_id}",
+                hint="Resume it with the run command, not split.",
+            )
         if not dry_run:
             logger.set_log_file(job.logs_dir / "split.log")
 
@@ -401,6 +455,446 @@ def run_split(
     return jobs
 
 
+def run_upscale(
+    jobs: Sequence[Job],
+    config: Config,
+    options: UpscaleOptions,
+    logger: Logger,
+    *,
+    dry_run: bool = False,
+) -> list[Job]:
+    effective_config = dataclasses.replace(
+        config,
+        upscayl_bin=options.upscayl_bin or config.upscayl_bin,
+        models_dir=options.models_dir or config.models_dir,
+    )
+    paths = discover_upscayl(effective_config)
+    models = list_models(paths.models_dir)
+    names = {model.name for model in models}
+    if options.model not in names:
+        raise ValidationError(
+            f"Upscayl model not found: {options.model}",
+            hint="Installed: " + ", ".join(sorted(names)),
+        )
+    tile = resolve_tile(options.tile, detect_vram_mb())
+    icd = resolve_icd(effective_config, options.icd)
+    results: list[Job] = []
+    for job in jobs:
+        if any(job.path.glob(".done_chunk_*")):
+            raise ValidationError(
+                f"Job is chunked: {job.job_id}",
+                hint="Resume it with the run command.",
+            )
+        if not job.frames_dir.is_dir():
+            raise ValidationError(
+                f"No frames found for job: {job.job_id}",
+                hint="Run split first.",
+            )
+        frame_count = job.get_int("frame_count")
+        if frame_count <= 0:
+            frame_count = count_contiguous_frames(
+                job.frames_dir,
+                job.get("frame_format") or "png",
+            )
+        if frame_count <= 0:
+            raise ValidationError(f"Job has no frames: {job.job_id}")
+        output_dir = (
+            Path(options.upscaled_dir).expanduser()
+            if options.upscaled_dir is not None
+            else job.upscaled_dir
+        )
+        existing = any(
+            path.is_file() for path in output_dir.glob("*")
+        ) if output_dir.is_dir() else False
+        if existing and (
+            (job.get("model") and job.get("model") != options.model)
+            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+        ) and not options.force:
+            raise ValidationError(
+                "Existing upscaled frames use a different model or scale.",
+                hint="Use --force to clear them and upscale again.",
+            )
+        if existing and options.force and (
+            (job.get("model") and job.get("model") != options.model)
+            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+        ):
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+            job.clear_stage("upscale")
+            job.set("upscaled_count", 0)
+        width = job.get_int("width", 1920)
+        height = job.get_int("height", 1080)
+        batch_size = resolve_batch_size(options.batch_size, width, height)
+        if dry_run:
+            logger.info(
+                f"Would upscale {job.job_id}: {frame_count} frames with "
+                f"{options.model} at {options.scale}x, tile {tile}, batch {batch_size}"
+            )
+            results.append(job)
+            continue
+        progress = Progress("upscale", frame_count)
+        try:
+            count = upscale_frames(
+                job,
+                paths,
+                model=options.model,
+                scale=options.scale,
+                output_dir=output_dir,
+                tile=tile,
+                batch_size=batch_size,
+                gpu=options.gpu,
+                icd=icd,
+                threads=options.threads,
+                retry=options.retry,
+                logger=logger,
+                progress=progress,
+            )
+        except PipelineError as exc:
+            job.set("last_error", str(exc)[:500])
+            try:
+                job.save()
+            except OSError:
+                pass
+            raise
+        job.set("model", options.model)
+        job.set("scale", options.scale)
+        job.set("tile", tile)
+        job.set("batch_size", batch_size)
+        job.set("upscaled_count", count)
+        job.set("upscaled_dir", str(output_dir))
+        job.set("last_error", "")
+        job.save()
+        job.mark_done("upscale")
+        results.append(job)
+    return results
+
+
+def _prepare_chunk_job(
+    source: Path,
+    config: Config,
+    options: RunOptions,
+    chunk_seconds: int,
+    logger: Logger,
+) -> tuple[Job, MediaInfo, float, float, float]:
+    media = probe_media(config.ffprobe, source, logger)
+    if media.duration <= 0:
+        raise ValidationError(f"Could not determine video duration: {source}")
+    if options.split.fps:
+        fps_num, fps_den = _parse_fps_override(options.split.fps)
+        media = dataclasses.replace(media, fps_num=fps_num, fps_den=fps_den)
+    start = parse_time(options.split.start) if options.split.start else 0.0
+    end = parse_time(options.split.end) if options.split.end else media.duration
+    end = min(end, media.duration)
+    if start >= end:
+        raise ValidationError("Trim range is empty")
+    duration = end - start
+    job = Job.create_or_open(config.work_dir, source, logger)
+    logger.set_log_file(job.logs_dir / "run.log")
+    if media.hdr and not options.split.tonemap:
+        raise ValidationError(
+            "HDR source detected. Upscayl models are 8-bit SDR.",
+            hint="Re-run with --tonemap to convert HDR to SDR BT.709.",
+        )
+    job.update_from_media(media)
+    if options.split.tonemap:
+        job.set("color_primaries", "bt709")
+        job.set("color_trc", "bt709")
+        job.set("colorspace", "bt709")
+        job.set("color_range", "tv")
+        job.set("hdr", False)
+    scale, target = _resolve_scale(media, options.split, job, config)
+    fps = media.fps_decimal or 30.0
+    total_frames = int(round(duration * fps))
+    job.set("duration", f"{duration:.3f}")
+    job.set("range_start", f"{start:.3f}")
+    job.set("range_end", "" if options.split.end is None else f"{end:.3f}")
+    job.set("scale", scale)
+    job.set("target_height", "" if target is None else target)
+    job.set("model", options.split.model)
+    job.set("frame_format", options.split.format)
+    job.set("frame_pattern", frame_pattern(options.split.format))
+    job.set("denoise", options.split.denoise)
+    job.set("decode", options.split.decode)
+    job.set("tonemap", options.split.tonemap)
+    job.set("frame_count", total_frames)
+    job.set("upscaled_count", 0)
+    job.set("chunk_seconds", chunk_seconds)
+    job.set("chunk_frames", int(round(chunk_seconds * fps)))
+    job.save()
+    return job, media, start, end, duration
+
+
+def _run_chunked(
+    source: Path,
+    config: Config,
+    options: RunOptions,
+    chunk_seconds: int,
+    logger: Logger,
+) -> RunResult:
+    job, media, start, end, duration = _prepare_chunk_job(
+        source, config, options, chunk_seconds, logger
+    )
+    temp_output: Path | None = None
+    try:
+        preset = resolve_preset(options.encode.preset)
+        paths = discover_upscayl(dataclasses.replace(
+            config,
+            upscayl_bin=options.upscale.upscayl_bin or config.upscayl_bin,
+            models_dir=options.upscale.models_dir or config.models_dir,
+        ))
+        models = list_models(paths.models_dir)
+        if options.upscale.model not in {model.name for model in models}:
+            raise ValidationError(f"Upscayl model not found: {options.upscale.model}")
+        tile = resolve_tile(options.upscale.tile, detect_vram_mb())
+        icd = resolve_icd(config, options.upscale.icd)
+        chunks = plan_chunks(duration, media.fps_decimal or 30.0, chunk_seconds)
+        if not chunks:
+            raise ValidationError("Chunk plan is empty")
+        candidates = encoder_candidates(preset, options.encode.encoder, config.ffmpeg)
+        audio_mode = options.encode.audio or (
+            config.default_audio if config.default_audio != "auto" else preset.default_audio
+        )
+        subs_mode = options.encode.subs or (
+            config.default_subs if config.default_subs != "auto" else preset.default_subs
+        )
+        audio_plan = plan_audio(
+            media, preset, audio_mode, options.encode.audio_bitrate, options.encode.all_audio
+        )
+        if start > 0 and any(stream.mode == "copy" for stream in audio_plan.streams):
+            audio_plan = dataclasses.replace(
+                audio_plan,
+                streams=tuple(
+                    dataclasses.replace(stream, mode="aac")
+                    if stream.mode == "copy"
+                    else stream
+                    for stream in audio_plan.streams
+                ),
+            )
+        subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
+        final_output = _resolve_output_path(
+            job, preset.extension, options.encode, multiple_jobs=False
+        )
+        temp_output = final_output.with_name(
+            f"{final_output.stem}.partial{final_output.suffix}"
+        )
+        final_output.parent.mkdir(parents=True, exist_ok=True)
+        progress = Progress("upscale", job.get_int("frame_count"))
+        expected_width = expected_height = 0
+        segments: list[Path] = []
+        for chunk in chunks:
+            if free_bytes(config.work_dir) < config.min_free_gb * 1024**3:
+                raise DiskSpaceError(
+                    "Free space fell below the configured minimum before a chunk."
+                )
+            extension = "mov" if preset.codec == "prores" else "ts"
+            segment = job.chunks_dir / f"chunk_{chunk.index:04d}.{extension}"
+            marker = job.path / f".done_chunk_{chunk.index:04d}"
+            segments.append(segment)
+            if marker.is_file() and segment.is_file() and segment.stat().st_size > 0:
+                progress.update(chunk.frame_count)
+                continue
+            chunk_dir = job.chunks_dir / f"chunk_{chunk.index:04d}"
+            if chunk_dir.exists():
+                shutil.rmtree(chunk_dir)
+            frames_dir = chunk_dir / "frames"
+            upscaled_dir = chunk_dir / "upscaled"
+            frames_dir.mkdir(parents=True)
+            split_command = build_split_command(
+                job.source_path,
+                job,
+                media,
+                start=start + chunk.start,
+                duration=chunk.end - chunk.start,
+                first_frame=1,
+                fmt=options.split.format,
+                jpeg_quality=options.split.jpeg_quality,
+                png_compression=options.split.png_compression,
+                denoise=options.split.denoise,
+                tonemap=options.split.tonemap,
+                decode=options.split.decode,
+                output_dir=frames_dir,
+                frame_limit=chunk.frame_count,
+            )
+            split_command[0] = str(config.ffmpeg)
+            run_command(split_command, logger=logger)
+            validate_frame_set(frames_dir, expected=chunk.frame_count)
+            upscale_frames(
+                job,
+                paths,
+                model=options.upscale.model,
+                scale=options.upscale.scale,
+                output_dir=upscaled_dir,
+                tile=tile,
+                batch_size=resolve_batch_size(
+                    options.upscale.batch_size,
+                    job.get_int("width", 1920) * (job.get_int("scale") or options.upscale.scale),
+                    job.get_int("height", 1080) * (job.get_int("scale") or options.upscale.scale),
+                ),
+                gpu=options.upscale.gpu,
+                icd=icd,
+                threads=options.upscale.threads,
+                retry=options.upscale.retry,
+                logger=logger,
+                progress=progress,
+                source_dir=frames_dir,
+                total_frames=chunk.frame_count,
+            )
+            frame_set = validate_frame_set(upscaled_dir, expected=chunk.frame_count)
+            frame_width, frame_height = probe_first_frame_dimensions(
+                config.ffprobe, frame_set.paths[0], logger
+            )
+            expected_width, expected_height = output_dimensions(
+                frame_width,
+                frame_height,
+                options.encode.target_height or job.get_int("target_height") or None,
+                options.encode.allow_huge,
+            )
+            segment_error: Exception | None = None
+            for candidate in candidates:
+                command = build_segment_command(
+                    job,
+                    frame_set,
+                    media,
+                    preset,
+                    candidate,
+                    options.encode,
+                    segment,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                )
+                command[0] = str(config.ffmpeg)
+                try:
+                    run_command(command, logger=logger)
+                    segment_error = None
+                    break
+                except CommandError as exc:
+                    segment_error = exc
+            if segment_error is not None:
+                raise EncodeError(
+                    f"Chunk {chunk.index} encode failed",
+                    hint=str(segment_error),
+                )
+            segment_info = probe_media(config.ffprobe, segment, logger)
+            if segment_info.duration <= 0:
+                raise EncodeError(f"Chunk {chunk.index} segment is invalid")
+            marker.write_text("", encoding="utf-8")
+            if not options.encode.keep_chunks:
+                shutil.rmtree(chunk_dir, ignore_errors=True)
+        if expected_width == 0 and segments:
+            first_segment = probe_media(config.ffprobe, segments[0], logger)
+            expected_width = first_segment.width
+            expected_height = first_segment.height
+        concat_output = job.chunks_dir / (
+            "concat.mov" if preset.codec == "prores" else "concat.ts"
+        )
+        concat_segments(config.ffmpeg, segments, concat_output, logger)
+        mux = build_mux_command(
+            job,
+            media,
+            preset,
+            audio_plan,
+            subtitle_plan,
+            options.encode,
+            concat_output,
+            temp_output,
+            duration,
+        )
+        mux[0] = str(config.ffmpeg)
+        run_command(mux, logger=logger)
+        validate_output(
+            config.ffprobe,
+            temp_output,
+            job,
+            media,
+            options.encode,
+            expected_width,
+            expected_height,
+            audio_plan.enabled,
+            len(subtitle_plan.streams),
+            logger,
+        )
+        os.replace(temp_output, final_output)
+        temp_output = None
+        if not options.encode.keep_chunks:
+            shutil.rmtree(job.chunks_dir, ignore_errors=True)
+        job.set("preset", preset.name)
+        job.set("encoder", options.encode.encoder)
+        job.set("audio", audio_mode)
+        job.set("subs", subs_mode)
+        job.set("last_error", "")
+        job.save()
+        job.mark_done("assemble")
+        if options.cleanup:
+            _cleanup_intermediates(job)
+        return RunResult(source, job, final_output, None)
+    except PipelineError as exc:
+        if temp_output is not None and temp_output.exists():
+            try:
+                temp_output.unlink()
+            except OSError:
+                pass
+        job.set("last_error", str(exc)[:500])
+        try:
+            job.save()
+        except OSError:
+            pass
+        return RunResult(source, job, None, str(exc))
+
+
+def run_all(
+    inputs: Sequence[Path],
+    config: Config,
+    options: RunOptions,
+    logger: Logger,
+) -> list[RunResult]:
+    results: list[RunResult] = []
+    for input_path in inputs:
+        chunk_value = str(options.chunk_seconds).strip().lower()
+        if chunk_value not in {"0", "auto"}:
+            try:
+                chunk_seconds = int(chunk_value)
+            except ValueError as exc:
+                raise ValidationError(f"Invalid --chunk-seconds: {chunk_value}") from exc
+            result = _run_chunked(
+                Path(input_path), config, options, chunk_seconds, logger
+            )
+            results.append(result)
+            if result.error and options.stop_on_error:
+                raise ValidationError(result.error)
+            continue
+        job: Job | None = None
+        try:
+            job = run_split([input_path], config, options.split, logger)[0]
+            run_upscale([job], config, options.upscale, logger)
+            outputs = run_assemble([job], config, options.encode, logger)
+            output = outputs[0] if outputs else None
+            if options.cleanup:
+                run_clean(
+                    [job],
+                    config,
+                    frames=False,
+                    upscaled=False,
+                    chunks=False,
+                    sequence=False,
+                    batch=False,
+                    include_output=False,
+                    all_intermediates=True,
+                    dry_run=False,
+                    logger=logger,
+                )
+            results.append(RunResult(input_path, job, output, None))
+        except PipelineError as exc:
+            results.append(RunResult(input_path, job, None, str(exc)))
+            if options.stop_on_error:
+                raise
+    logger.info(f"{'INPUT':<32} {'STATUS':<8} OUTPUT")
+    for result in results:
+        status = "OK" if result.error is None else "FAILED"
+        output = str(result.output) if result.output else (result.error or "-")
+        logger.info(f"{result.input_path.name[:32]:<32} {status:<8} {output}")
+    return results
+
+
 def resolve_jobs(
     args: Sequence[str],
     config: Config,
@@ -513,7 +1007,12 @@ def _resolve_output_path(
 
 
 def _cleanup_intermediates(job: Job) -> None:
-    for directory in (job.frames_dir, job.upscaled_dir, job.sequence_dir):
+    for directory in (
+        job.frames_dir,
+        job.upscaled_dir,
+        job.sequence_dir,
+        job.chunks_dir,
+    ):
         if directory.exists():
             shutil.rmtree(directory)
 
@@ -552,11 +1051,20 @@ def run_assemble(
                     hint="Use --force only if the existing upscaled frames still match the source.",
                 )
 
+            if any(job.path.glob(".done_chunk_*")):
+                raise ValidationError(
+                    f"Job is chunked: {job.job_id}",
+                    hint="Resume it with the run command.",
+                )
             media = probe_media(config.ffprobe, job.source_path, logger)
             upscaled_dir = (
                 Path(options.upscaled_dir).expanduser()
                 if options.upscaled_dir is not None
-                else job.upscaled_dir
+                else (
+                    Path(job.get("upscaled_dir")).expanduser()
+                    if job.get("upscaled_dir")
+                    else job.upscaled_dir
+                )
             )
             if not upscaled_dir.is_dir():
                 raise ValidationError(
@@ -768,6 +1276,8 @@ def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None
             stage = "done"
         elif job.get("last_error"):
             stage = "failed"
+        elif any(job.path.glob(".done_chunk_*")):
+            stage = "chunk"
         elif upscaled:
             stage = "assemble"
         elif frames:
