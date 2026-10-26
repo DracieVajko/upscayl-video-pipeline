@@ -56,6 +56,8 @@ All notable changes to this project will be documented here.
   output, correct frame counts and audio.
 - Real chunked run on an 18.5 s clip (`--chunk-seconds 10`): 2 chunks, 556
   frames, 3104×4128, correct audio, chunks cleaned.
+- Full 83.15 s real Upscayl run (`--chunk-seconds 30`): 2,495 frames,
+  2944×3904, 83.116689 s, AAC 83.105 s, BT.709, chunks cleaned.
 - `doctor` green including the Upscayl smoke test and all encoder smoke tests.
 - See `docs/VALIDATION.md` for exact results and the remaining gaps.
 

@@ -59,11 +59,24 @@ Result: 2 chunks, 556 frames, 3104×4128, 18.526667 s, AAC 18.508 s, BT.709,
 `chunks/` removed, `.done_chunk_0001` and `.done_chunk_0002` present. The
 upscale took about 12 minutes on the RTX 3060 Laptop.
 
+## Full 83-second chunked run
+
+`volanie s kolegom.mov` (83.15 s, 2,495 frames) was processed end-to-end with
+`--chunk-seconds 30`, the same model/settings. Result:
+
+- 3 chunks, 2,495 output frames.
+- 2944×3904 H.264, 83.116689 s.
+- AAC stereo, 83.105 s, start 0.
+- BT.709 primaries/transfer/matrix, TV range.
+- 586.9 MB output.
+- `chunks/` removed; `.done_chunk_0001`–`.done_chunk_0003` present.
+- No errors in `run.log`.
+
 ## Not yet validated
 
-- A full 83-second Upscayl run. At the measured ~0.8 frames/s, 2,495 frames
-  would take roughly 50 minutes; it was not run end-to-end. Full split and full
-  assemble were validated separately.
 - `run --chunk-seconds auto`; this build uses the non-chunked path for `auto`.
   Use an explicit value such as `60`.
 - V2 PowerShell/bash parity.
+- A full real-Upscayl run of the 7.5 s clip (it was validated as a 1 s window
+  plus a full split/assemble; the 18.5 s and 83 s clips were validated
+  end-to-end).
