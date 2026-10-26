@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .errors import DependencyError, ValidationError
+from .errors import CommandError, DependencyError, ValidationError
+from .util import Logger, run_command
 
 
 @dataclass(frozen=True)
@@ -231,3 +232,81 @@ def resolve_batch_size(requested: int, frame_width: int, frame_height: int) -> i
     if frame_width * frame_height > 8_000_000:
         return 50
     return 100
+
+
+def _ffmpeg_path() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+def ffmpeg_make_test_png(path: Path, ffmpeg: str | None = None) -> None:
+    binary = ffmpeg or _ffmpeg_path()
+    if not binary:
+        raise DependencyError("ffmpeg not found for the Upscayl smoke test")
+    result = subprocess.run(
+        [
+            binary, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=gray:s=64x64",
+            "-frames:v", "1", str(path),
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DependencyError(result.stderr or result.stdout or "ffmpeg smoke PNG failed")
+
+
+def smoke_test(
+    paths: UpscaylPaths,
+    model: str,
+    tile: int,
+    icd: Path | None,
+    logger: Logger,
+    ffmpeg: Path | None = None,
+) -> tuple[bool, str]:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="upscayl-smoke-") as td:
+        root = Path(td)
+        source = root / "in"
+        target = root / "out"
+        source.mkdir()
+        target.mkdir()
+        try:
+            if ffmpeg:
+                ffmpeg_make_test_png(source / "test.png", str(ffmpeg))
+            else:
+                ffmpeg_make_test_png(source / "test.png")
+        except Exception as exc:
+            return False, f"test PNG failed: {exc}"
+        env = {"VK_ICD_FILENAMES": str(icd)} if icd else None
+        command = [
+            str(paths.binary),
+            "-i", str(source),
+            "-o", str(target),
+            "-m", str(paths.models_dir),
+            "-n", model,
+            "-s", "2",
+            "-g", "0",
+            "-t", str(tile),
+            "-f", "png",
+            "-c", "0",
+        ]
+        try:
+            run_command(
+                command,
+                logger=logger,
+                env=env,
+                cwd=paths.binary.parent,
+                check=True,
+            )
+        except CommandError as exc:
+            return False, (exc.stderr_tail or str(exc))[:500]
+        except Exception as exc:
+            return False, str(exc)[:500]
+        output = target / "test.png"
+        if not output.is_file() or output.stat().st_size <= 0:
+            return False, "Upscayl produced no output file"
+    return True, "OK"
