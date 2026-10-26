@@ -372,10 +372,13 @@ def upscale_frames(
     retry: int,
     logger: Logger,
     progress: Progress | None = None,
+    source_dir: Path | None = None,
+    total_frames: int | None = None,
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    total = job.get_int("frame_count")
+    source_dir = Path(source_dir) if source_dir is not None else job.frames_dir
+    total = int(total_frames) if total_frames is not None else job.get_int("frame_count")
     if total <= 0:
         raise ValidationError(f"Job has no frame_count: {job.job_id}")
     batch_size = max(1, int(batch_size))
@@ -386,7 +389,7 @@ def upscale_frames(
     env = {"VK_ICD_FILENAMES": str(icd)} if icd else None
 
     while True:
-        missing = missing_indices(job.frames_dir, output_dir, total)
+        missing = missing_indices(source_dir, output_dir, total)
         if not missing:
             break
         batch = missing[:batch_size]
@@ -398,7 +401,7 @@ def upscale_frames(
         incoming.mkdir(parents=True)
         outgoing.mkdir(parents=True)
         for index in batch:
-            source = _source_for_index(job.frames_dir, index)
+            source = _source_for_index(source_dir, index)
             if source is None:
                 raise ValidationError(f"Missing source frame {index:08d} for job {job.job_id}")
             _link_or_copy(source, incoming / source.name)

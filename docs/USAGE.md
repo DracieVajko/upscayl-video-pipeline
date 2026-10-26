@@ -109,6 +109,43 @@ upscayl-video assemble <job...> [--all] \
   successful assemble. The output is kept.
 - `--tonemap` is rejected: tonemapping belongs to the split stage.
 
+### `upscale`
+
+```bash
+upscayl-video upscale <job...> [--all] \
+  [--model NAME] [--scale 2|3|4] [--gpu N] [--tile auto|N] \
+  [--batch-size N] [--threads L:P:S] [--icd auto|none|PATH] \
+  [--upscayl-bin PATH] [--models-dir DIR] [--upscaled-dir DIR] \
+  [--retry N] [--force] [--dry-run]
+```
+
+Runs Upscayl's CLI in bounded batches, restarting the process after each batch
+to avoid its memory leak. Missing frames are retried; existing valid outputs
+are skipped. `auto` tile uses VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
+`--icd auto` finds the NVIDIA Vulkan ICD on Windows; this is the workaround for
+the AMD `vkEnumeratePhysicalDevices failed 5` error.
+
+### `run`
+
+```bash
+upscayl-video run <video...> [split/upscale/assemble options] \
+  [--chunk-seconds auto|0|N] [--stop-on-error] [--cleanup]
+```
+
+One command per video: split → upscale → assemble. Continues to the next input
+after a failure unless `--stop-on-error`. `--cleanup` removes intermediates
+after success.
+
+### Chunking
+
+`run --chunk-seconds 60` splits a long video into 60-second chunks, upscales and
+encodes each chunk separately, concatenates the video-only segments, then muxes
+the original audio/subtitles. Chunk intermediates are deleted after each chunk
+unless `--keep-chunks`. A completed chunk is skipped on resume.
+
+`--chunk-seconds auto` currently uses the non-chunked path; use an explicit
+value (for example `60`) to enable chunking.
+
 ### `status`
 
 ```bash
@@ -199,7 +236,6 @@ the assembler accepts both. If two files map to the same frame index, use
 
 ## Not in this build
 
-- Automated `upscale` and `run` commands.
-- Chunking and cleanup for multi-hour videos.
-- Full 9-option menu.
-- Native PowerShell/bash V2 implementation.
+- Native PowerShell/bash V2 implementation (`v2/`).
+- Chunking driven by `auto`; use an explicit `--chunk-seconds N`.
+- Frame interpolation and HDR output.

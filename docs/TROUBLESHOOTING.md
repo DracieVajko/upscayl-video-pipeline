@@ -113,8 +113,45 @@ launcher tries `py -3` first, then `python`.
 Tonemapping is a split-stage operation. Re-split with `--tonemap`; it cannot be
 applied during assembly because the frames have already passed through Upscayl.
 
-## Automated upscale is missing
+## `vkEnumeratePhysicalDevices failed 5` / `Invalid GPU Device`
 
-This build intentionally covers the manual GUI workflow only. The automated
-`upscale`/`run` stage, chunking, and the no-Python V2 implementation are the
-next plans.
+The old AMD Vulkan driver can break device enumeration even when an NVIDIA GPU
+is present. Try, in order:
+
+1. Update the AMD driver.
+2. Set the NVIDIA ICD explicitly:
+
+```bash
+upscayl-video upscale <job> --icd "C:\Windows\System32\DriverStore\FileRepository\nv...\nv-vk64.json"
+```
+
+3. Put the same path in `config.txt` as `icd=...`.
+4. Run `upscayl-video doctor`; it retries with the NVIDIA ICD and reports the
+   workaround.
+
+## Upscayl CLI or models not found
+
+Set `upscayl_bin` and `models_dir` in `config.txt`, or pass
+`--upscayl-bin`/`--models-dir`. Models need matching `.param` and `.bin` files.
+`doctor` lists the discovered paths.
+
+## Upscayl runs out of memory
+
+`upscale` retries once with half the tile and batch size. If it still fails,
+lower `--tile 128` or `--tile 64` and use `--batch-size 10`. Close other GPU
+applications. The target machine's 6 GiB card works with tile 256; 4 GiB cards
+should use 128.
+
+## Chunk concatenation fails
+
+Chunked run uses MPEG-TS segments for H.264/HEVC and MOV for ProRes, then concat
+copy. If your build rejects the concat, try `--preset mkv-hevc`; if it still
+fails, run without chunking (`--chunk-seconds 0`) and report the exact error.
+
+## `--chunk-seconds auto` does not chunk
+
+This build uses the non-chunked path for `auto`. Pass an explicit value:
+
+```bash
+upscayl-video run "movie.mkv" --chunk-seconds 60
+```
