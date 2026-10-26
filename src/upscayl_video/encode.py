@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .errors import DependencyError, ValidationError
+from .probe import MediaInfo
+from .util import Logger
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,7 @@ PRESETS: dict[str, Preset] = {
     "mp4-h264": Preset("mp4-h264", "mp4", "mp4", "h264", "auto", "auto"),
     "mp4-hevc": Preset("mp4-hevc", "mp4", "mp4", "hevc", "auto", "auto"),
     "mkv-hevc": Preset("mkv-hevc", "mkv", "mkv", "hevc", "copy", "copy"),
-    "mov-prores": Preset("mov-prores", "mov", "mov", "prores", "pcm", "copy"),
+    "mov-prores": Preset("mov-prores", "mov", "mov", "prores", "pcm", "auto"),
 }
 
 
@@ -226,3 +228,207 @@ def encoder_candidates(preset: Preset, requested: str, ffmpeg: Path) -> list[Enc
             hint="Use --encoder auto or cpu.",
         )
     return candidates
+
+
+@dataclass(frozen=True)
+class AudioStreamPlan:
+    source_index: int
+    mode: str
+
+
+@dataclass(frozen=True)
+class AudioPlan:
+    streams: tuple[AudioStreamPlan, ...]
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class SubtitleStreamPlan:
+    source_index: int
+    mode: str
+
+
+@dataclass(frozen=True)
+class SubtitlePlan:
+    streams: tuple[SubtitleStreamPlan, ...]
+    dropped: tuple[int, ...]
+
+
+_MP4_AUDIO = {"aac", "mp3", "ac3", "eac3", "alac"}
+_MOV_AUDIO = {"aac", "mp3", "ac3", "eac3", "alac"}
+_TEXT_SUBTITLES = {"subrip", "ass", "ssa", "webvtt", "mov_text", "text"}
+_IMAGE_SUBTITLES = {
+    "hdmv_pgs_subtitle",
+    "dvd_subtitle",
+    "dvb_subtitle",
+    "xsub",
+}
+
+
+def _audio_compatible(container: str, codec: str) -> bool:
+    name = codec.lower()
+    if container == "mkv":
+        return True
+    if container == "mp4":
+        return name in _MP4_AUDIO
+    if container == "mov":
+        return name in _MOV_AUDIO or name.startswith("pcm_")
+    return False
+
+
+def _subtitle_compatible(container: str, codec: str) -> bool:
+    name = codec.lower()
+    if container == "mkv":
+        return True
+    if container in {"mp4", "mov"}:
+        return name == "mov_text"
+    return False
+
+
+def _is_image_subtitle(codec: str) -> bool:
+    return codec.lower() in _IMAGE_SUBTITLES
+
+
+def _is_text_subtitle(codec: str) -> bool:
+    return codec.lower() in _TEXT_SUBTITLES
+
+
+def plan_audio(
+    media: MediaInfo,
+    preset: Preset,
+    mode: str,
+    bitrate: int,
+    all_audio: bool,
+) -> AudioPlan:
+    requested = str(mode).strip().lower()
+    if requested not in {"auto", "copy", "aac", "pcm", "none"}:
+        raise ValidationError(f"Unknown audio mode: {mode}")
+    if bitrate <= 0:
+        raise ValidationError("Audio bitrate must be greater than zero")
+    if not media.audio or requested == "none":
+        return AudioPlan((), False)
+
+    selected = media.audio if all_audio else media.audio[:1]
+    if requested == "auto" and preset.default_audio in {"copy", "aac", "pcm"}:
+        requested = preset.default_audio
+
+    if requested == "pcm":
+        if preset.container == "mp4":
+            raise ValidationError(
+                "PCM audio is not supported in MP4.",
+                hint="Use --preset mkv-hevc or --audio aac.",
+            )
+        return AudioPlan(
+            tuple(AudioStreamPlan(stream.index, "pcm") for stream in selected),
+            True,
+        )
+
+    if requested == "copy":
+        bad = [
+            stream.codec_name
+            for stream in selected
+            if not _audio_compatible(preset.container, stream.codec_name)
+        ]
+        if bad:
+            raise ValidationError(
+                "Audio codec cannot be copied into "
+                f"{preset.container}: {', '.join(sorted(set(bad)))}",
+                hint="Use --audio aac or --preset mkv-hevc.",
+            )
+        return AudioPlan(
+            tuple(AudioStreamPlan(stream.index, "copy") for stream in selected),
+            True,
+        )
+
+    if requested == "aac":
+        return AudioPlan(
+            tuple(AudioStreamPlan(stream.index, "aac") for stream in selected),
+            True,
+        )
+
+    # auto: per-stream copy when possible, otherwise AAC.
+    return AudioPlan(
+        tuple(
+            AudioStreamPlan(
+                stream.index,
+                "copy" if _audio_compatible(preset.container, stream.codec_name) else "aac",
+            )
+            for stream in selected
+        ),
+        True,
+    )
+
+
+def plan_subtitles(
+    media: MediaInfo,
+    preset: Preset,
+    mode: str,
+    logger: Logger,
+) -> SubtitlePlan:
+    requested = str(mode).strip().lower()
+    if requested not in {"auto", "copy", "convert", "none"}:
+        raise ValidationError(f"Unknown subtitle mode: {mode}")
+    if not media.subtitles or requested == "none":
+        return SubtitlePlan((), ())
+
+    if requested == "copy":
+        bad = [
+            stream.codec_name
+            for stream in media.subtitles
+            if not _subtitle_compatible(preset.container, stream.codec_name)
+        ]
+        if bad:
+            raise ValidationError(
+                "Subtitle codec cannot be copied into "
+                f"{preset.container}: {', '.join(sorted(set(bad)))}",
+                hint="Use --subs convert or --preset mkv-hevc.",
+            )
+        return SubtitlePlan(
+            tuple(
+                SubtitleStreamPlan(stream.index, "copy")
+                for stream in media.subtitles
+            ),
+            (),
+        )
+
+    if requested == "convert":
+        image = [stream.index for stream in media.subtitles if _is_image_subtitle(stream.codec_name)]
+        if image:
+            raise ValidationError(
+                "Image subtitles cannot be converted to mov_text.",
+                hint="Use --preset mkv-hevc to keep them.",
+            )
+        return SubtitlePlan(
+            tuple(
+                SubtitleStreamPlan(stream.index, "mov_text")
+                for stream in media.subtitles
+            ),
+            (),
+        )
+
+    if preset.container == "mkv":
+        return SubtitlePlan(
+            tuple(
+                SubtitleStreamPlan(stream.index, "copy")
+                for stream in media.subtitles
+            ),
+            (),
+        )
+
+    plans: list[SubtitleStreamPlan] = []
+    dropped: list[int] = []
+    for stream in media.subtitles:
+        if _is_image_subtitle(stream.codec_name):
+            dropped.append(stream.index)
+            continue
+        if _is_text_subtitle(stream.codec_name):
+            plans.append(SubtitleStreamPlan(stream.index, "mov_text"))
+            continue
+        dropped.append(stream.index)
+    if dropped:
+        logger.warn(
+            "Dropped subtitle stream(s) "
+            + ", ".join(str(index) for index in dropped)
+            + f" that cannot be stored in {preset.container}; use mkv-hevc to keep them."
+        )
+    return SubtitlePlan(tuple(plans), tuple(dropped))
