@@ -1,6 +1,7 @@
 work/
 input/
 output/
+TEST_EXAMPLE_VIDEOS/
 *.log
 batch_*/
 __pycache__/
