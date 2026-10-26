@@ -816,7 +816,10 @@ Use `ffprobe -v error -print_format json -show_format -show_streams`.
 
 Extract:
 
-- duration (format or video stream);
+- duration: prefer the video stream duration. If it is absent (common in
+  Matroska), probe the last video packet and use `pts_time + duration_time`.
+  Fall back to the format duration only if the tail probe fails. Format
+  duration can include a longer audio track and must not drive the frame count;
 - `avg_frame_rate` if valid and non-zero, else `r_frame_rate`, else `30/1`;
 - width, height, pix_fmt;
 - first video stream index;
@@ -825,7 +828,8 @@ Extract:
 - chapters;
 - `color_primaries`, `color_transfer`, `color_space`, `color_range`;
 - rotation from side data or `rotate` tag;
-- `nb_frames` if present (do not trust it blindly).
+- `nb_frames` / `nb_read_packets` from `-count_packets` if present; this is
+  metadata/sanity information, not the expected CFR frame count.
 
 Normalize the frame rate to a rational. Store both `fps` and `fps_decimal`.
 
@@ -855,6 +859,9 @@ ffmpeg -hide_banner -nostdin -y -benchmark
 Details:
 
 - **Frame numbering:** 8 digits, starting at 1: `frame_00000001.png`. This supports up to 99,999,999 frames.
+- **Expected frame count:** `round(processed_duration × fps)`. This is correct
+  for CFR output, `--fps` resampling, and VFR sources. The source packet count
+  is not used as the expected output count.
 - **CFR:** `-fps_mode cfr -r <fps>`. VFR sources are converted to CFR; duplicated/dropped frames are FFmpeg's standard conversion.
 - **Range:** `--start` and `--end` use `-ss` before `-i` and `-t` for duration. Modern FFmpeg decodes from the preceding keyframe and discards frames, so the result is frame-accurate without O(n²) seeking.
 - **Audio is not extracted.** The original source is used as the audio/subtitle input during assemble. This preserves timing and avoids an extra file.
@@ -1068,7 +1075,9 @@ Validation:
 
 - Count files matching `^frame_(\d{8})`.
 - Require indices to be contiguous from 1 to N. If not, list the missing indices and exit 4.
-- If `frame_count` in `job.txt` differs from N, update it and warn.
+- If `frame_count` in `job.txt` is non-zero and differs from N, fail with a
+  list of missing/extra frames. Do not silently shrink `frame_count`; a partial
+  Upscayl batch must be completed first.
 - For manual GUI outputs, group by index; resolve duplicates according to `--pick`.
 - Sort by numeric index, never by lexicographic filename alone (8-digit padding makes them equivalent, but numeric parsing is safer).
 - All selected frames must share one extension. If they do not, exit 4 and tell the user to re-run Upscayl with one output format.
@@ -1091,7 +1100,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark
   [-c:a <audio args>] [-c:s <subtitle args>]
   [-metadata:s:v:0 rotate=0] [-map_metadata 1]
   [-movflags +faststart] [-tag:v hvc1]
-  [-shortest]
+  [-t <output-duration>]
   <output>
 ```
 
@@ -1103,7 +1112,7 @@ Rules:
 - `-map 1:a:0?` is valid shorthand only when exactly the first audio track is selected; otherwise use absolute indices. `-map 1:a?` is used only with `--all-audio`.
 - `-map 1:<sub_idx>` maps only the subtitle streams selected by the subtitle policy. Do not use `-map 1:s?` when image subtitles are being dropped; FFmpeg would try to convert them and fail.
 - `-map_chapters 1` is added only when the source has chapters.
-- `-shortest` is used **only when audio is present**. With no audio, it is omitted so that a short subtitle track cannot trim the video. If the audio is slightly shorter, the last few milliseconds of video may be trimmed; this is preferable to a video stream longer than the audio.
+- Do **not** use `-shortest`. Audio tracks are frequently slightly shorter than the video because of codec padding; `-shortest` would silently drop the last video frames. Instead, when audio or subtitles are present, set an explicit output duration: `-t <job duration>` (or `frame_count / fps` when the job duration is missing). This keeps every video frame and trims only longer audio/subtitle tails. With no audio and no subtitles, omit `-t`; the image sequence ends at the last frame.
 - `-map_metadata 1` copies global metadata from the source. Stream metadata is not copied wholesale; rotation is explicitly reset.
 - `--tonemap` is not used here. Tonemapping happens during split. The only video filters at assemble time are:
   - optional `target_height` downscale: `scale=-2:<target_height>:flags=lanczos`;
@@ -1161,6 +1170,18 @@ Output validation:
 - Pixel format must match the preset (`yuv420p`, `yuv420p10le`, or `yuv422p10le`).
 - On failure, exit 8, keep all intermediates, and log the ffprobe output.
 
+Output safety:
+
+- The output path must not resolve to the source video. Explicit output paths
+  must use the preset's extension (`.mp4`, `.mkv`, or `.mov`).
+- Encode to a temporary `*.partial.<ext>` file, validate it, then atomically
+  replace the final output. On failure, delete the partial file; an existing
+  good output from a previous run must survive.
+- Clear `.done_assemble` before starting a re-encode. A failed attempt must not
+  leave a stale success marker.
+- When audio or subtitles are present, use an explicit `-t <job duration>` as
+  described above. Do not use `-shortest`.
+
 ### 9.12 Audio
 
 - Default: first audio track, `--audio auto`.
@@ -1181,7 +1202,10 @@ Output validation:
 - Trimming (`--start`/`--end`):
   - Video is frame-accurate.
   - For sample-accurate audio boundaries, use AAC re-encoding when a trim is active. If the user requested `copy`, the tool warns and uses AAC for the trimmed audio. This avoids packet-boundary offsets.
-  - Map the audio with `-ss <range_start> -t <duration>` from the source.
+  - Map audio and subtitles through the same source input, with `-ss
+    <range_start>` before `-i <source>` and `-t <duration>` on the output.
+  - Chapters are mapped from the source; their timestamps may not shift for a
+    trimmed range. The tool warns when chapters are present on a trim.
 - Audio bitrate options: 96, 128, 192, 256, 320 kbps. Default 192.
 - MP3, AAC, WAV, FLAC, Opus, Vorbis, AC3, EAC3 are supported as inputs.
 
@@ -1192,7 +1216,10 @@ Output validation:
   - MKV: copy all.
   - MP4/MOV: convert text subtitles (`subrip`, `ass`, `webvtt`, `mov_text`) to `mov_text`. Image subtitles (`hdmv_pgs_subtitle`, `dvd_subtitle`, `dvb_subtitle`, `xsub`) cannot be converted; drop them with a warning that lists the streams and recommends `mkv-hevc`.
 - `copy`: copy; error if the container cannot hold the codec.
-- `convert`: convert to `mov_text`; error for image subtitles.
+- `convert`: in MP4/MOV, convert text to `mov_text`; in MKV, convert text to
+  `subrip` (Matroska does not support `mov_text`). Error for image subtitles.
+- `auto` in MKV: copy compatible text/image codecs and convert `mov_text` to
+  `subrip`; `copy` with `mov_text` in MKV is an error.
 - `none`: drop subtitles.
 - Chapters: `-map_chapters 1` when present.
 - Subtitle language and title metadata are preserved by copy; `mov_text` conversion keeps language/title tags where FFmpeg supports them.
@@ -1281,7 +1308,7 @@ Fallbacks:
 Audio sync:
 
 - Video-only chunks are concatenated. Their durations sum to the original video duration (within one frame).
-- The original audio is muxed once with `-shortest`.
+- The original audio is muxed once with an explicit `-t <job duration>`, not `-shortest`.
 - For trims, the audio range is mapped with `-ss`/`-t`.
 - Acceptance test: a 5-second chunked job must have a final duration within 0.1 seconds and an audio stream that starts at 0.
 
@@ -1764,7 +1791,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -metadata:s:v:0 rotate=0 ^
   -map_metadata 1 ^
   -movflags +faststart ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mp4"
 ```
 
@@ -1781,7 +1808,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -c:s copy ^
   -metadata:s:v:0 rotate=0 ^
   -map_metadata 1 ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mkv"
 ```
 
@@ -1797,7 +1824,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -c:a pcm_s24le ^
   -metadata:s:v:0 rotate=0 ^
   -movflags +faststart ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mov"
 ```
 
