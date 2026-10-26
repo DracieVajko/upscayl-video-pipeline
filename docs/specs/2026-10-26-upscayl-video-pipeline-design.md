@@ -391,7 +391,7 @@ Default work directory: `<project>/work`, overridable with `--work-dir` or `conf
 - `job_id` is the sanitized source stem, truncated to 80 characters.
 - If the folder already exists and its `source.txt` points to the same absolute source path, the job is reused.
 - If the folder exists but points to a different source, `_2`, `_3`, ... is appended.
-- Sanitization: replace characters outside `[A-Za-z0-9._-]` with `_`; collapse repeated `_`; strip leading/trailing dots and spaces. If the result is empty, use `video`.
+- Sanitization: replace characters that are invalid in Windows file names (`<>:"/\|?*`) and control characters with `_`; replace whitespace runs with `_`; collapse repeated `_`; strip leading/trailing dots and spaces. Keep Unicode letters and digits, so Slovak or other non-ASCII stems remain readable. Avoid Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) by appending `_`. Truncate to 80 characters. If the result is empty, use `video`.
 - One job represents one source and one trim range. Two different ranges of the same source collide on the job id; use separate work directories or `--force` to replace the existing job. The tool does not create automatic range variants.
 
 ### 7.2 `job.txt`
@@ -1084,7 +1084,7 @@ General command shape:
 ffmpeg -hide_banner -nostdin -y -benchmark
   -framerate <fps> -start_number 1 -i <frames>/<pattern>
   [-i <source>]
-  -map 0:v:0 [-map 1:a:0? | -map 1:a?] [-map 1:s:<idx>?] [-map_chapters 1]
+  -map 0:v:0 [-map 1:<audio_idx> ...] [-map 1:<sub_idx> ...] [-map_chapters 1]
   -c:v <encoder> <quality args>
   [-vf <target-height downscale>] -pix_fmt <pix_fmt>
   [-color_primaries ...] [-color_trc ...] [-colorspace ...] [-color_range ...]
@@ -1099,8 +1099,9 @@ Rules:
 
 - `-nostdin` prevents FFmpeg from consuming the terminal.
 - `-framerate` and `-start_number` must match the extraction settings.
-- `-map 1:a:0?` maps the first audio track. `-map 1:a?` is used only with `--all-audio`. The default is the first track.
-- `-map 1:s:<idx>?` maps only the subtitle streams selected by the subtitle policy. Do not use `-map 1:s?` when image subtitles are being dropped; FFmpeg would try to convert them and fail.
+- `-map 1:<idx>` uses the **absolute** stream index reported by ffprobe (for example `-map 1:1`, not `-map 1:a:1`). This avoids confusing absolute stream indices with type-relative audio/subtitle indices.
+- `-map 1:a:0?` is valid shorthand only when exactly the first audio track is selected; otherwise use absolute indices. `-map 1:a?` is used only with `--all-audio`.
+- `-map 1:<sub_idx>` maps only the subtitle streams selected by the subtitle policy. Do not use `-map 1:s?` when image subtitles are being dropped; FFmpeg would try to convert them and fail.
 - `-map_chapters 1` is added only when the source has chapters.
 - `-shortest` is used **only when audio is present**. With no audio, it is omitted so that a short subtitle track cannot trim the video. If the audio is slightly shorter, the last few milliseconds of video may be trimmed; this is preferable to a video stream longer than the audio.
 - `-map_metadata 1` copies global metadata from the source. Stream metadata is not copied wholesale; rotation is explicitly reset.
@@ -1263,8 +1264,8 @@ After all chunks:
 1. Write a concat list with absolute paths.
 2. Concatenate with `-f concat -safe 0 -i list.txt -c copy` into `chunks/concat.ts` (or `.mov`).
 3. Mux audio, subtitles, chapters, and metadata from the source:
-   `ffmpeg -i chunks/concat.ts -i source -map 0:v:0 -map 1:a:0? -map 1:s:<idx>? ... -c:v copy ...`.
-   `--all-audio` replaces `1:a:0?` with `1:a?`.
+   `ffmpeg -i chunks/concat.ts -i source -map 0:v:0 -map 1:<audio_idx> -map 1:<sub_idx> ... -c:v copy ...`.
+   The indices are absolute ffprobe stream indices. `--all-audio` maps every audio stream.
 4. Validate the final output with `ffprobe`.
 5. Write `.done_assemble`.
 6. Delete chunk segments unless `--keep-chunks`.

@@ -11,9 +11,9 @@ Two implementations with the same commands and work-folder format:
 - **V1:** Python 3.10+ (standard library only), Windows/Unix launchers.
 - **V2:** no Python — PowerShell 5.1+ on Windows, bash 3.2+ on Linux/macOS.
 
-**Status:** design phase. The implementation has not started yet. See
-[`docs/specs/2026-10-26-upscayl-video-pipeline-design.md`](docs/specs/2026-10-26-upscayl-video-pipeline-design.md)
-for the full specification.
+**Status:** design approved; V1 core implementation plan ready; implementation not started.
+See the [design spec](docs/specs/2026-10-26-upscayl-video-pipeline-design.md) and the
+[V1 core plan](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md).
 
 ## Planned features
 
