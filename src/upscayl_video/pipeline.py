@@ -29,10 +29,23 @@ from .errors import (
     UsageError,
     ValidationError,
 )
-from .frames import build_sequence, extract_frames, scan_frames, validate_frame_set
+from .frames import (
+    build_sequence,
+    count_contiguous_frames,
+    extract_frames,
+    scan_frames,
+    validate_frame_set,
+)
 from .job import Job, find_jobs
 from .probe import MediaInfo, parse_rational, probe_first_frame_dimensions, probe_media
-from .util import Logger, format_duration, human_bytes, parse_time, run_command
+from .util import (
+    Logger,
+    ensure_within,
+    format_duration,
+    human_bytes,
+    parse_time,
+    run_command,
+)
 
 _VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
@@ -599,3 +612,124 @@ def run_assemble(
                 pass
             raise
     return outputs
+
+
+def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None:
+    jobs = find_jobs(config.work_dir)
+    if not jobs:
+        logger.info(f"No jobs found in: {config.work_dir}")
+        return
+    logger.info(f"{'JOB':<24} {'STAGE':<10} {'FRAMES':>7} {'UPSCALED':>9}  OUTPUT")
+    for job in jobs:
+        frame_format = job.get("frame_format") or "png"
+        frames = count_contiguous_frames(job.frames_dir, frame_format)
+        if frames == 0:
+            frames = job.get_int("frame_count")
+        upscaled = sum(
+            1
+            for paths in scan_frames(job.upscaled_dir, recursive=True).values()
+            for path in paths
+            if path.is_file() and path.stat().st_size > 0
+        )
+        if upscaled == 0:
+            upscaled = job.get_int("upscaled_count")
+        outputs = sorted(
+            path
+            for path in job.output_dir.glob("*")
+            if path.is_file()
+        ) if job.output_dir.is_dir() else []
+        output_text = "-"
+        if outputs:
+            output_text = f"{outputs[0].name} ({human_bytes(outputs[0].stat().st_size)})"
+
+        if job.is_done("assemble") and outputs:
+            stage = "done"
+        elif job.get("last_error"):
+            stage = "failed"
+        elif upscaled:
+            stage = "assemble"
+        elif frames:
+            stage = "upscale"
+        elif job.is_done("split"):
+            stage = "split"
+        else:
+            stage = "empty"
+
+        logger.info(
+            f"{job.job_id[:24]:<24} {stage:<10} {frames:>7} {upscaled:>9}  {output_text}"
+        )
+        if verbose:
+            logger.info(f"  path: {job.path}")
+            logger.info(f"  source: {job.source_path}")
+            logger.info(
+                "  settings: "
+                + ", ".join(
+                    f"{key}={job.get(key)}"
+                    for key in (
+                        "scale",
+                        "target_height",
+                        "model",
+                        "frame_format",
+                        "decode",
+                        "preset",
+                    )
+                    if job.get(key) not in {None, ""}
+                )
+            )
+
+
+def run_clean(
+    jobs: Sequence[Job],
+    config: Config,
+    *,
+    frames: bool,
+    upscaled: bool,
+    chunks: bool,
+    sequence: bool,
+    batch: bool,
+    include_output: bool,
+    all_intermediates: bool,
+    dry_run: bool,
+    logger: Logger,
+) -> None:
+    for job in jobs:
+        ensure_within(job.path, config.work_dir)
+        if not (job.path / "job.txt").is_file():
+            raise ValidationError(f"Not a job folder: {job.path}")
+
+        targets: set[Path] = set()
+        if all_intermediates:
+            frames = upscaled = chunks = sequence = batch = True
+        if frames:
+            targets.add(job.frames_dir)
+        if upscaled:
+            targets.add(job.upscaled_dir)
+        if chunks:
+            targets.add(job.chunks_dir)
+        if sequence:
+            targets.add(job.sequence_dir)
+        if batch:
+            targets.update(path for path in job.path.glob("batch_*") if path.is_dir())
+        if include_output:
+            targets.add(job.output_dir)
+
+        for target in sorted(targets, key=lambda path: str(path)):
+            target = ensure_within(target, job.path)
+            if not target.exists():
+                continue
+            if dry_run:
+                logger.info(f"Would delete: {target}")
+                continue
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            logger.info(f"Deleted: {target}")
+
+        if not dry_run:
+            if frames:
+                job.clear_stage("split")
+            if upscaled:
+                job.clear_stage("upscale")
+            if include_output:
+                job.clear_stage("assemble")

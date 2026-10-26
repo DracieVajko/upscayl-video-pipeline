@@ -69,6 +69,23 @@ class TestCli(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertTrue((work / "clip" / "frames" / "frame_00000001.png").exists())
 
+    def test_status_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "status", "--help"],
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_clean_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "clean", "--help"],
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--all-intermediates", result.stdout)
+
     def test_assemble_help(self):
         result = subprocess.run(
             [sys.executable, str(LAUNCHER), "assemble", "--help"],

@@ -16,7 +16,9 @@ from .pipeline import (
     resolve_inputs,
     resolve_jobs,
     run_assemble,
+    run_clean,
     run_split,
+    run_status,
 )
 from .util import Logger
 
@@ -95,6 +97,26 @@ def build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--verify-frames", action="store_true")
     assemble.add_argument("--allow-huge", action="store_true")
     assemble.add_argument("--tonemap", action="store_true", help=argparse.SUPPRESS)
+
+    subparsers.add_parser(
+        "status",
+        help="Show jobs and their progress",
+        parents=[parent],
+    )
+
+    clean = subparsers.add_parser(
+        "clean",
+        help="Delete selected intermediate directories",
+        parents=[parent],
+    )
+    clean.add_argument("jobs", nargs="*", help="Job folders, or --all-jobs")
+    clean.add_argument("--frames", action="store_true")
+    clean.add_argument("--upscaled", action="store_true")
+    clean.add_argument("--chunks", action="store_true")
+    clean.add_argument("--batch", action="store_true")
+    clean.add_argument("--all-intermediates", action="store_true")
+    clean.add_argument("--include-output", action="store_true")
+    clean.add_argument("--all-jobs", action="store_true")
     return parser
 
 
@@ -184,6 +206,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if outputs:
                 logger.info(f"Assembled {len(outputs)} video(s)")
+            return 0
+
+        if args.command == "status":
+            run_status(config, logger, verbose=bool(getattr(args, "verbose", False)))
+            return 0
+
+        if args.command == "clean":
+            jobs = resolve_jobs(args.jobs, config, all_jobs=args.all_jobs)
+            run_clean(
+                jobs,
+                config,
+                frames=args.frames,
+                upscaled=args.upscaled,
+                chunks=args.chunks,
+                sequence=False,
+                batch=args.batch,
+                include_output=args.include_output,
+                all_intermediates=args.all_intermediates,
+                dry_run=bool(getattr(args, "dry_run", False)),
+                logger=logger,
+            )
             return 0
 
         parser.error("unsupported command")
