@@ -24,6 +24,7 @@ the implementation that fits their machine without changing workflows.
 - Design: [`docs/specs/2026-10-26-upscayl-video-pipeline-design.md`](docs/specs/2026-10-26-upscayl-video-pipeline-design.md)
 - V1 core plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md)
 - V1 automation plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-automation.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-automation.md)
+- V2 parity plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v2-parity.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v2-parity.md)
 - Usage: [`docs/USAGE.md`](docs/USAGE.md)
 - Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - Validation record: [`docs/VALIDATION.md`](docs/VALIDATION.md)
