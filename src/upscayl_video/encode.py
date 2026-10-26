@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, replace
@@ -11,7 +12,7 @@ from .errors import DependencyError, OutputValidationError, ValidationError
 from .frames import FrameSet
 from .job import Job
 from .probe import MediaInfo, probe_media
-from .util import Logger
+from .util import Logger, run_command
 
 
 @dataclass(frozen=True)
@@ -619,6 +620,36 @@ def build_mux_command(
         args.extend(["-tag:v", "hvc1"])
     args.append(str(output))
     return args
+
+
+def normalize_color_tags(
+    ffmpeg: Path,
+    ffprobe: Path,
+    path: Path,
+    container: str,
+    logger: Logger,
+) -> None:
+    """Rewrite container color tags to BT.709 when an encoder mis-tags them."""
+    info = probe_media(ffprobe, path, logger)
+    if (
+        info.color_primaries == "bt709"
+        and info.color_trc == "bt709"
+        and info.colorspace == "bt709"
+        and info.color_range == "tv"
+    ):
+        return
+    temp = path.with_name(f"{path.stem}.colorfix{path.suffix}")
+    command = [
+        str(ffmpeg), "-hide_banner", "-nostdin", "-y", "-i", str(path),
+        "-c", "copy",
+        "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-colorspace", "bt709", "-color_range", "tv",
+    ]
+    if container in {"mp4", "mov"}:
+        command.extend(["-movflags", "+faststart"])
+    command.append(str(temp))
+    run_command(command, logger=logger)
+    os.replace(temp, path)
 
 
 def validate_output(

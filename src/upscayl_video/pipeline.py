@@ -20,6 +20,7 @@ from .encode import (
     build_mux_command,
     build_segment_command,
     encoder_candidates,
+    normalize_color_tags,
     output_dimensions,
     plan_audio,
     plan_subtitles,
@@ -801,6 +802,13 @@ def _run_chunked(
         )
         mux[0] = str(config.ffmpeg)
         run_command(mux, logger=logger)
+        normalize_color_tags(
+            config.ffmpeg,
+            config.ffprobe,
+            temp_output,
+            preset.container,
+            logger,
+        )
         validate_output(
             config.ffprobe,
             temp_output,
@@ -1202,6 +1210,13 @@ def run_assemble(
                     hint=last_error.stderr_tail or str(last_error),
                 ) from last_error
 
+            normalize_color_tags(
+                config.ffmpeg,
+                config.ffprobe,
+                temp_output,
+                preset.container,
+                logger,
+            )
             validate_output(
                 config.ffprobe,
                 temp_output,

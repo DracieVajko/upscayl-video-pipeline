@@ -183,7 +183,7 @@ def check_encoder_smoke(config: Config, logger: Logger) -> list[CheckResult]:
             continue
         command = [
             str(config.ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "color=c=gray:s=64x64", "-frames:v", "1",
+            "-f", "lavfi", "-i", "color=c=gray:s=256x256", "-frames:v", "1",
             "-c:v", name, "-f", "null", "-",
         ]
         result = run_command(command, logger=logger, check=False)
