@@ -190,6 +190,40 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
     )
 
 
+def probe_first_frame_dimensions(
+    ffprobe: Path,
+    path: Path,
+    logger: Logger,
+) -> tuple[int, int]:
+    command = [
+        str(ffprobe),
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0",
+        str(path),
+    ]
+    try:
+        result = run_command(command, logger=logger)
+    except CommandError as exc:
+        raise ValidationError(
+            f"Could not read frame dimensions: {path}",
+            hint=exc.stderr_tail or str(exc),
+        ) from exc
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) >= 2:
+            try:
+                return int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+    raise ValidationError(f"Could not parse frame dimensions: {path}")
+
+
 def probe_media(ffprobe: Path, source: Path, logger: Logger) -> MediaInfo:
     source = Path(source)
     command = [

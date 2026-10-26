@@ -7,8 +7,10 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .errors import DependencyError, ValidationError
-from .probe import MediaInfo
+from .errors import DependencyError, OutputValidationError, ValidationError
+from .frames import FrameSet
+from .job import Job
+from .probe import MediaInfo, probe_media
 from .util import Logger
 
 
@@ -357,6 +359,207 @@ def plan_audio(
         ),
         True,
     )
+
+
+def _even(value: int) -> int:
+    return value if value % 2 == 0 else value + 1
+
+
+def _output_dimensions(
+    frame_width: int,
+    frame_height: int,
+    target_height: int | None,
+    allow_huge: bool,
+) -> tuple[int, int]:
+    if target_height is not None:
+        if target_height > frame_height:
+            raise ValidationError(
+                f"--target-height ({target_height}) exceeds the upscaled height ({frame_height})"
+            )
+        output_height = target_height
+        output_width = _even(max(2, int(round(frame_width * target_height / frame_height))))
+    else:
+        output_width = frame_width
+        output_height = frame_height
+    if not allow_huge:
+        if output_width > 8192 or output_height > 8192:
+            raise ValidationError(
+                "Output exceeds 8192 px on a side; use --allow-huge only if you really need it"
+            )
+        if output_width * output_height > 40_000_000:
+            raise ValidationError(
+                "Output exceeds 40 megapixels; use --allow-huge only if you really need it"
+            )
+    return output_width, output_height
+
+
+def _color_value(job: Job, media_value: str | None, key: str) -> str | None:
+    value = job.get(key) or media_value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "unknown":
+        return None
+    return text
+
+
+def build_assemble_command(
+    job: Job,
+    frame_set: FrameSet,
+    media: MediaInfo,
+    preset: Preset,
+    encoder: EncoderChoice,
+    audio_plan: AudioPlan,
+    subtitle_plan: SubtitlePlan,
+    options: EncodeOptions,
+    output: Path,
+    *,
+    frame_width: int,
+    frame_height: int,
+) -> list[str]:
+    quality_value = resolve_quality(preset, options.quality, options.crf)
+    encoder = apply_quality(encoder, options.quality)
+    _output_dimensions(
+        frame_width,
+        frame_height,
+        options.target_height,
+        options.allow_huge,
+    )
+
+    has_source_input = bool(
+        audio_plan.enabled or subtitle_plan.streams or media.chapters > 0
+    )
+    fps = job.get("fps") or (media.fps_rational if media.fps_den else "30/1")
+    pattern = f"frame_%08d.{frame_set.extension}"
+
+    args: list[str] = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-benchmark",
+        "-framerate",
+        fps,
+        "-start_number",
+        str(frame_set.first_index),
+        "-i",
+        str(frame_set.directory / pattern),
+    ]
+    if has_source_input:
+        args.extend(["-i", str(job.source_path)])
+
+    args.extend(["-map", "0:v:0"])
+    if audio_plan.enabled:
+        for stream in audio_plan.streams:
+            args.extend(["-map", f"1:{stream.source_index}"])
+        for index, stream in enumerate(audio_plan.streams):
+            codec = {"copy": "copy", "aac": "aac", "pcm": "pcm_s24le"}[stream.mode]
+            args.extend([f"-c:a:{index}", codec])
+            if stream.mode == "aac":
+                args.extend([f"-b:a:{index}", f"{options.audio_bitrate}k"])
+    else:
+        args.append("-an")
+
+    if subtitle_plan.streams:
+        for stream in subtitle_plan.streams:
+            args.extend(["-map", f"1:{stream.source_index}"])
+        for index, stream in enumerate(subtitle_plan.streams):
+            args.extend([f"-c:s:{index}", stream.mode])
+
+    if media.chapters > 0:
+        args.extend(["-map_chapters", "1"])
+
+    args.extend(video_codec_args(encoder, quality_value, ten_bit=options.ten_bit))
+
+    filters: list[str] = []
+    color_range = _color_value(job, media.color_range, "color_range")
+    if (color_range or "").lower() == "pc":
+        filters.append("scale=in_range=pc:out_range=tv")
+        color_range = "tv"
+    if options.target_height is not None:
+        filters.append(f"scale=-2:{options.target_height}:flags=lanczos")
+    if filters:
+        args.extend(["-vf", ",".join(filters)])
+
+    for key, flag in (
+        ("color_primaries", "-color_primaries"),
+        ("color_trc", "-color_trc"),
+        ("colorspace", "-colorspace"),
+    ):
+        value = _color_value(job, getattr(media, key), key)
+        if value:
+            args.extend([flag, value])
+    if color_range:
+        args.extend(["-color_range", color_range])
+
+    args.extend(["-metadata:s:v:0", "rotate=0"])
+    if has_source_input:
+        args.extend(["-map_metadata", "1"])
+    if preset.container in {"mp4", "mov"}:
+        args.extend(["-movflags", "+faststart"])
+    if preset.codec == "hevc" and preset.container in {"mp4", "mov"}:
+        args.extend(["-tag:v", "hvc1"])
+    if audio_plan.enabled:
+        args.append("-shortest")
+    args.append(str(output))
+    return args
+
+
+def validate_output(
+    ffprobe: Path,
+    output: Path,
+    job: Job,
+    media: MediaInfo,
+    options: EncodeOptions,
+    expected_width: int,
+    expected_height: int,
+    expected_audio: bool,
+    expected_subs: int,
+    logger: Logger,
+) -> None:
+    try:
+        info = probe_media(ffprobe, output, logger)
+    except ValidationError as exc:
+        raise OutputValidationError(
+            f"Output is not a readable video: {output}",
+            hint=str(exc),
+        ) from exc
+
+    problems: list[str] = []
+    if (info.width, info.height) != (expected_width, expected_height):
+        problems.append(
+            f"dimensions {info.width}x{info.height}, expected {expected_width}x{expected_height}"
+        )
+    expected_duration = float(job.get("duration") or media.duration or 0.0)
+    tolerance = max(0.1, 1.0 / max(info.fps_decimal, 1.0))
+    if abs(info.duration - expected_duration) > tolerance:
+        problems.append(
+            f"duration {info.duration:.3f}s, expected {expected_duration:.3f}s"
+        )
+    expected_fps = float(job.get("fps_decimal") or media.fps_decimal or 0.0)
+    if expected_fps and abs(info.fps_decimal - expected_fps) > 0.02:
+        problems.append(f"fps {info.fps_decimal:.3f}, expected {expected_fps:.3f}")
+    if bool(info.audio) != expected_audio:
+        problems.append(
+            f"audio streams {len(info.audio)}, expected {'at least one' if expected_audio else 'none'}"
+        )
+    if len(info.subtitles) != expected_subs:
+        problems.append(
+            f"subtitle streams {len(info.subtitles)}, expected {expected_subs}"
+        )
+    preset = resolve_preset(options.preset)
+    if preset.codec == "prores":
+        expected_pix_fmt = "yuv422p10le"
+    elif options.ten_bit:
+        expected_pix_fmt = "yuv420p10le"
+    else:
+        expected_pix_fmt = "yuv420p"
+    if info.pix_fmt != expected_pix_fmt:
+        problems.append(f"pixel format {info.pix_fmt}, expected {expected_pix_fmt}")
+    if problems:
+        raise OutputValidationError(
+            "Output validation failed: " + "; ".join(problems)
+        )
 
 
 def plan_subtitles(
