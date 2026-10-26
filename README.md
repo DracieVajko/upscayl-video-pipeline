@@ -6,33 +6,66 @@ A local FFmpeg + Upscayl pipeline for upscaling video:
 video → frames → Upscayl → frames → video (with audio, subtitles, chapters)
 ```
 
-Two implementations with the same commands and work-folder format:
+**Status:** V1 core implemented. Split, manual Upscayl GUI upscaling, and
+assemble work end-to-end. Automated `upscale`/`run`, chunking, and the
+no-Python V2 implementation are the next plans.
 
-- **V1:** Python 3.10+ (standard library only), Windows/Unix launchers.
-- **V2:** no Python — PowerShell 5.1+ on Windows, bash 3.2+ on Linux/macOS.
+- Design: [`docs/specs/2026-10-26-upscayl-video-pipeline-design.md`](docs/specs/2026-10-26-upscayl-video-pipeline-design.md)
+- V1 core plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md)
+- Usage: [`docs/USAGE.md`](docs/USAGE.md)
+- Troubleshooting: [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 
-**Status:** design approved; V1 core implementation plan ready; implementation not started.
-See the [design spec](docs/specs/2026-10-26-upscayl-video-pipeline-design.md) and the
-[V1 core plan](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md).
+## What works now
 
-## Planned features
+- One or many input videos, each with its own `work/<job>/` folder.
+- Split to PNG or JPEG with optional denoise, HDR tonemapping, CFR conversion,
+  resume, and a sample-based disk estimate.
+- Manual batch upscaling in the Upscayl GUI.
+- Assembling standard or Upscayl-suffixed frame names, including one-level
+  mismatch subfolders.
+- MP4 H.264, MP4 HEVC, MKV HEVC, and MOV ProRes.
+- NVIDIA NVENC, AMD AMF, or CPU encoding, with automatic fallback.
+- Audio copy/AAC/PCM/none, multiple tracks on request, subtitles, chapters.
+- `doctor`, `status`, `clean`, `--dry-run`, and a basic interactive menu.
+- Paths with spaces and Unicode.
 
-- One or many input videos, each with its own work folder.
-- Split-only mode for manual Upscayl GUI batch upscaling.
-- Automated `upscayl-bin` upscaling in bounded batches (memory-leak safe).
-- PNG/JPEG frames, optional denoise.
-- MP4 H.264, MP4 HEVC, MKV HEVC, MOV ProRes.
-- NVIDIA NVENC, AMD AMF, or CPU encoding; CPU/GPU decoding with a per-job benchmark.
-- Audio copy/AAC/PCM/none; multiple audio tracks; subtitles; chapters.
-- Chunked processing for long videos, disk estimates, resume, cleanup.
-- `doctor` command for dependencies, GPU/Vulkan, encoders, models, and disk.
+Not in this build: automated `upscayl-bin` invocation, `run`, chunking,
+the full menu, and V2 PowerShell/bash parity.
 
 ## Requirements
 
+- Python 3.10+ (V1 core).
 - FFmpeg and ffprobe.
-- Upscayl with `upscayl-bin` and models (for the automated upscale stage).
-- V1: Python 3.10+.
-- V2: Windows PowerShell 5.1+ or bash 3.2+.
+- Upscayl (for the manual GUI stage; not required by the CLI itself).
+
+## Quick start
+
+```bash
+# Windows
+upscayl-video.bat doctor --ffmpeg "C:\FFMPEG\ffmpeg.exe" --ffprobe "C:\FFMPEG\ffprobe.exe"
+
+# Linux/macOS
+./upscayl-video.sh doctor
+
+# 1. Split
+upscayl-video split "clip.mp4" --work-dir "D:\UpscaylVideo"
+
+# 2. In Upscayl:
+#    input  D:\UpscaylVideo\clip\frames
+#    output D:\UpscaylVideo\clip\upscaled
+#    choose a model and scale, run the batch
+
+# 3. Assemble
+upscayl-video assemble "D:\UpscaylVideo\clip" --preset mp4-h264 --encoder auto
+```
+
+See [`docs/USAGE.md`](docs/USAGE.md) for every command and flag.
+
+## Configuration
+
+Copy `config.example.txt` to `config.txt` and set `ffmpeg`, `ffprobe`, and
+`work_dir`. CLI flags override the file. Put the work directory on a large
+drive; 1080p PNG frames are commonly 1–3 MiB each.
 
 ## License
 

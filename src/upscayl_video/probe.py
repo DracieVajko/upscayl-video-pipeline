@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import CommandError, ValidationError
-from .util import Logger, run_command
+from .util import Logger, parse_time, run_command
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class StreamInfo:
     bit_rate: int | None = None
     language: str | None = None
     title: str | None = None
+    duration: float | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class MediaInfo:
     hdr: bool
     source_size: int
     source_mtime: int
+    nb_frames: int | None = None
 
     @property
     def fps_decimal(self) -> float:
@@ -112,8 +114,18 @@ def _as_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _tag_duration(value: object) -> float | None:
+    if not value:
+        return None
+    try:
+        return parse_time(str(value))
+    except ValidationError:
+        return None
+
+
 def _stream_info(stream: Mapping[str, Any]) -> StreamInfo:
     tags = stream.get("tags") or {}
+    duration = _as_float(stream.get("duration"), 0.0) or _tag_duration(tags.get("DURATION"))
     return StreamInfo(
         index=_as_int(stream.get("index")),
         codec_name=str(stream.get("codec_name") or "unknown"),
@@ -121,6 +133,7 @@ def _stream_info(stream: Mapping[str, Any]) -> StreamInfo:
         bit_rate=_as_int(stream.get("bit_rate")) if stream.get("bit_rate") is not None else None,
         language=tags.get("language"),
         title=tags.get("title"),
+        duration=duration,
     )
 
 
@@ -144,13 +157,19 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
         raise ValidationError(f"No video stream found in: {source}")
 
     format_info = data.get("format") or {}
-    duration = _as_float(format_info.get("duration"), None) or _as_float(
-        video.get("duration"), 0.0
-    )
     fps_num, fps_den = normalize_fps(
         video.get("avg_frame_rate"),
         video.get("r_frame_rate"),
     )
+    packet_count = _as_int(video.get("nb_read_packets") or video.get("nb_frames"))
+    # Prefer the video stream duration. If it is absent (common in Matroska),
+    # derive it from the packet count; format duration may include a longer
+    # audio track and would produce a wrong frame count.
+    duration = _as_float(video.get("duration"), 0.0)
+    if not duration and packet_count and fps_den:
+        duration = packet_count * fps_den / fps_num
+    if not duration:
+        duration = _as_float(format_info.get("duration"), 0.0)
     color_trc = _clean(video.get("color_transfer"))
     pix_fmt = str(video.get("pix_fmt") or "unknown")
     source_path = Path(source)
@@ -187,6 +206,7 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
         hdr=is_hdr(color_trc, pix_fmt),
         source_size=source_path.stat().st_size if exists else 0,
         source_mtime=int(source_path.stat().st_mtime) if exists else 0,
+        nb_frames=packet_count or None,
     )
 
 
@@ -235,6 +255,7 @@ def probe_media(ffprobe: Path, source: Path, logger: Logger) -> MediaInfo:
         "-show_format",
         "-show_streams",
         "-show_chapters",
+        "-count_packets",
         str(source),
     ]
     try:

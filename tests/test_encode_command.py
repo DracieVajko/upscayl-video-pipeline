@@ -34,7 +34,7 @@ class TestCommand(unittest.TestCase):
     def test_mp4_h264_audio_copy_subs_mov_text(self):
         with tempfile.TemporaryDirectory() as td:
             job = make_job(td)
-            media = make_media_info(Path("input.mp4"), audio=(StreamInfo(1, "aac"),), subtitles=(StreamInfo(2, "subrip"),))
+            media = make_media_info(Path("input.mp4"), audio=(StreamInfo(1, "aac", duration=5.0),), subtitles=(StreamInfo(2, "subrip"),))
             frame_set = FrameSet(Path("frames"), "png", (1,), (Path("frames/frame_00000001.png"),))
             args = build_assemble_command(
                 job, frame_set, media, PRESETS["mp4-h264"],
@@ -51,7 +51,8 @@ class TestCommand(unittest.TestCase):
             self.assertIn("libx264", args)
             self.assertIn("mov_text", args)
             self.assertIn("+faststart", args)
-            self.assertIn("-shortest", args)
+            self.assertIn("-t", args)
+            self.assertNotIn("-shortest", args)
             self.assertIn("1:1", args)  # absolute audio stream index
             self.assertIn("1:2", args)  # absolute subtitle stream index
 

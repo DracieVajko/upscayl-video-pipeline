@@ -310,7 +310,12 @@ def run_split(
         if not dry_run:
             job.save()
 
-        expected_frames = int(round(processed_duration * media.fps_decimal))
+        full_range = start <= 0.001 and abs(end - media.duration) <= 0.001
+        expected_frames = (
+            media.nb_frames
+            if full_range and media.nb_frames
+            else int(round(processed_duration * media.fps_decimal))
+        )
         sample_bytes = sample_frame_bytes(
             job.source_path,
             job,

@@ -365,7 +365,7 @@ def _even(value: int) -> int:
     return value if value % 2 == 0 else value + 1
 
 
-def _output_dimensions(
+def output_dimensions(
     frame_width: int,
     frame_height: int,
     target_height: int | None,
@@ -419,7 +419,7 @@ def build_assemble_command(
 ) -> list[str]:
     quality_value = resolve_quality(preset, options.quality, options.crf)
     encoder = apply_quality(encoder, options.quality)
-    _output_dimensions(
+    output_dimensions(
         frame_width,
         frame_height,
         options.target_height,
@@ -499,8 +499,14 @@ def build_assemble_command(
         args.extend(["-movflags", "+faststart"])
     if preset.codec == "hevc" and preset.container in {"mp4", "mov"}:
         args.extend(["-tag:v", "hvc1"])
-    if audio_plan.enabled:
-        args.append("-shortest")
+    if audio_plan.enabled or subtitle_plan.streams:
+        # Use an explicit output duration instead of -shortest. Audio tracks
+        # are frequently slightly shorter than the video (codec padding), and
+        # -shortest would silently drop the last video frames.
+        duration_value = float(job.get("duration") or 0.0)
+        if duration_value <= 0:
+            duration_value = frame_set.count / max(media.fps_decimal, 1.0)
+        args.extend(["-t", f"{duration_value:.6f}"])
     args.append(str(output))
     return args
 

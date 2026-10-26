@@ -99,7 +99,6 @@ def sample_frame_bytes(
     start: float = 0.0,
     duration: float | None = None,
 ) -> int:
-    del config  # The command builder reads FFmpeg through run_command's caller.
     total = duration if duration is not None else max(0.0, media.duration - start)
     offset = min(1.0, max(0.0, total * 0.1))
     sample_at = start + offset if total > 0 else start
@@ -121,6 +120,7 @@ def sample_frame_bytes(
             output_dir=temp_dir,
             frame_limit=1,
         )
+        command[0] = str(config.ffmpeg)
         try:
             run_command(command, logger=logger)
             files = [path for path in temp_dir.iterdir() if path.is_file()]

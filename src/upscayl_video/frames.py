@@ -322,11 +322,12 @@ def _benchmark_decode(
     media: MediaInfo,
     decode: str,
     logger: Logger,
+    ffmpeg: str = "ffmpeg",
 ) -> float | None:
     with tempfile.TemporaryDirectory(prefix="upscayl-bench-") as td:
         output = Path(td) / "frame_%08d.png"
         args = [
-            "ffmpeg",
+            ffmpeg,
             "-hide_banner",
             "-nostdin",
             "-y",
@@ -364,13 +365,12 @@ def _benchmark_decode(
 
 
 def choose_decode(source: Path, media: MediaInfo, config: Config, logger: Logger) -> str:
-    del config
     # The caller validates the CLI value; this function only handles auto.
     if media.fps_den == 0 or not _hwaccel_args("gpu"):
         return "cpu"
     logger.debug("Benchmarking CPU and GPU frame extraction")
-    cpu_time = _benchmark_decode(source, media, "cpu", logger)
-    gpu_time = _benchmark_decode(source, media, "gpu", logger)
+    cpu_time = _benchmark_decode(source, media, "cpu", logger, str(config.ffmpeg))
+    gpu_time = _benchmark_decode(source, media, "gpu", logger, str(config.ffmpeg))
     if cpu_time is None and gpu_time is None:
         logger.warn("Decode benchmark failed; using CPU")
         return "cpu"
@@ -402,7 +402,14 @@ def extract_frames(
         raise ValidationError(f"Unsupported decode mode: {decode}")
     fps = media.fps_decimal or 30.0
     total_duration = max(0.0, (end if end is not None else media.duration) - start)
-    expected = int(round(total_duration * fps))
+    full_range = start <= 0.001 and (
+        end is None or abs(end - media.duration) <= 0.001
+    )
+    expected = (
+        media.nb_frames
+        if full_range and media.nb_frames
+        else int(round(total_duration * fps))
+    )
     if expected <= 0:
         return 0
     if media.hdr and not tonemap:
@@ -462,6 +469,7 @@ def extract_frames(
         decode=chosen,
         frame_limit=remaining,
     )
+    command[0] = str(config.ffmpeg)
     if dry_run:
         logger.info(" ".join(command))
         return expected
@@ -488,6 +496,7 @@ def extract_frames(
                 decode="cpu",
                 frame_limit=remaining,
             )
+            command[0] = str(config.ffmpeg)
             try:
                 run_command(command, logger=logger)
             except CommandError as retry_exc:

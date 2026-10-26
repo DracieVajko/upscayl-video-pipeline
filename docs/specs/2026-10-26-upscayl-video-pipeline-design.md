@@ -816,7 +816,10 @@ Use `ffprobe -v error -print_format json -show_format -show_streams`.
 
 Extract:
 
-- duration (format or video stream);
+- duration: prefer the video stream duration; if absent (common in Matroska),
+  derive it from `nb_read_packets / fps`; fall back to the format duration.
+  Format duration can include a longer audio track and must not drive the
+  frame count;
 - `avg_frame_rate` if valid and non-zero, else `r_frame_rate`, else `30/1`;
 - width, height, pix_fmt;
 - first video stream index;
@@ -825,7 +828,7 @@ Extract:
 - chapters;
 - `color_primaries`, `color_transfer`, `color_space`, `color_range`;
 - rotation from side data or `rotate` tag;
-- `nb_frames` if present (do not trust it blindly).
+- `nb_frames` / `nb_read_packets` from `-count_packets` if present (do not trust it blindly).
 
 Normalize the frame rate to a rational. Store both `fps` and `fps_decimal`.
 
@@ -1091,7 +1094,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark
   [-c:a <audio args>] [-c:s <subtitle args>]
   [-metadata:s:v:0 rotate=0] [-map_metadata 1]
   [-movflags +faststart] [-tag:v hvc1]
-  [-shortest]
+  [-t <output-duration>]
   <output>
 ```
 
@@ -1103,7 +1106,7 @@ Rules:
 - `-map 1:a:0?` is valid shorthand only when exactly the first audio track is selected; otherwise use absolute indices. `-map 1:a?` is used only with `--all-audio`.
 - `-map 1:<sub_idx>` maps only the subtitle streams selected by the subtitle policy. Do not use `-map 1:s?` when image subtitles are being dropped; FFmpeg would try to convert them and fail.
 - `-map_chapters 1` is added only when the source has chapters.
-- `-shortest` is used **only when audio is present**. With no audio, it is omitted so that a short subtitle track cannot trim the video. If the audio is slightly shorter, the last few milliseconds of video may be trimmed; this is preferable to a video stream longer than the audio.
+- Do **not** use `-shortest`. Audio tracks are frequently slightly shorter than the video because of codec padding; `-shortest` would silently drop the last video frames. Instead, when audio or subtitles are present, set an explicit output duration: `-t <job duration>` (or `frame_count / fps` when the job duration is missing). This keeps every video frame and trims only longer audio/subtitle tails. With no audio and no subtitles, omit `-t`; the image sequence ends at the last frame.
 - `-map_metadata 1` copies global metadata from the source. Stream metadata is not copied wholesale; rotation is explicitly reset.
 - `--tonemap` is not used here. Tonemapping happens during split. The only video filters at assemble time are:
   - optional `target_height` downscale: `scale=-2:<target_height>:flags=lanczos`;
@@ -1281,7 +1284,7 @@ Fallbacks:
 Audio sync:
 
 - Video-only chunks are concatenated. Their durations sum to the original video duration (within one frame).
-- The original audio is muxed once with `-shortest`.
+- The original audio is muxed once with an explicit `-t <job duration>`, not `-shortest`.
 - For trims, the audio range is mapped with `-ss`/`-t`.
 - Acceptance test: a 5-second chunked job must have a final duration within 0.1 seconds and an audio stream that starts at 0.
 
@@ -1764,7 +1767,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -metadata:s:v:0 rotate=0 ^
   -map_metadata 1 ^
   -movflags +faststart ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mp4"
 ```
 
@@ -1781,7 +1784,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -c:s copy ^
   -metadata:s:v:0 rotate=0 ^
   -map_metadata 1 ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mkv"
 ```
 
@@ -1797,7 +1800,7 @@ ffmpeg -hide_banner -nostdin -y -benchmark ^
   -c:a pcm_s24le ^
   -metadata:s:v:0 rotate=0 ^
   -movflags +faststart ^
-  -shortest ^
+  -t 5.000000 ^
   "work\job\output\input_upscaled.mov"
 ```
 

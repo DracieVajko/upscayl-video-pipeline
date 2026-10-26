@@ -48,6 +48,8 @@ class TestMediaInfo(unittest.TestCase):
         self.assertEqual(info.height, 240)
         self.assertEqual(len(info.audio), 1)
         self.assertEqual(info.audio[0].codec_name, "aac")
+        self.assertAlmostEqual(info.audio[0].duration, 5.0)
+        self.assertEqual(info.nb_frames, 150)
         self.assertEqual(len(info.subtitles), 1)
         self.assertEqual(info.subtitles[0].codec_name, "subrip")
         self.assertEqual(info.chapters, 1)
