@@ -609,7 +609,9 @@ def build_mux_command(
     if media.chapters > 0:
         args.extend(["-map_chapters", "1"])
     args.extend(["-c:v", "copy"])
-    args.extend(["-t", f"{duration:.6f}", "-map_metadata", "1"])
+    args.extend(["-t", f"{duration:.6f}"])
+    if has_source:
+        args.extend(["-map_metadata", "1"])
     args.extend(["-metadata:s:v:0", "rotate=0"])
     if preset.container in {"mp4", "mov"}:
         args.extend(["-movflags", "+faststart"])
