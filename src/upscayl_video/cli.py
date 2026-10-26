@@ -12,6 +12,7 @@ from .config import load_config
 from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError, UsageError, ValidationError
+from .menu import run_menu
 from .pipeline import (
     SplitOptions,
     resolve_inputs,
@@ -130,6 +131,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if not raw_args:
+        if not sys.stdin.isatty():
+            parser.print_help()
+            return 2
+        logger = Logger()
+        try:
+            config = load_config(
+                None,
+                tool_dir=Path(__file__).resolve().parents[2],
+            )
+        except PipelineError as exc:
+            logger.error(str(exc))
+            return exc.exit_code
+        return run_menu(config, logger)
+
     args = parser.parse_args(argv)
 
     overrides: dict[str, str] = {}
