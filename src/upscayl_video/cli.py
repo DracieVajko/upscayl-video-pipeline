@@ -9,6 +9,7 @@ from typing import Sequence
 
 from . import __version__
 from .config import load_config
+from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError, UsageError, ValidationError
 from .pipeline import (
@@ -117,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     clean.add_argument("--all-intermediates", action="store_true")
     clean.add_argument("--include-output", action="store_true")
     clean.add_argument("--all-jobs", action="store_true")
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Check FFmpeg, encoders, and the work directory",
+        parents=[parent],
+    )
+    doctor.add_argument("--skip-upscayl-smoke", action="store_true")
     return parser
 
 
@@ -228,6 +236,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger=logger,
             )
             return 0
+
+        if args.command == "doctor":
+            work_dir = getattr(args, "work_dir", None)
+            return run_doctor(
+                config,
+                work_dir=Path(work_dir) if work_dir else None,
+                skip_upscayl_smoke=args.skip_upscayl_smoke,
+                verbose=bool(getattr(args, "verbose", False)),
+                logger=logger,
+            )
 
         parser.error("unsupported command")
         return 2

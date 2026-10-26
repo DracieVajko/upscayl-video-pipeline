@@ -69,6 +69,15 @@ class TestCli(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertTrue((work / "clip" / "frames" / "frame_00000001.png").exists())
 
+    def test_doctor_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "doctor", "--help"],
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--skip-upscayl-smoke", result.stdout)
+
     def test_status_help(self):
         result = subprocess.run(
             [sys.executable, str(LAUNCHER), "status", "--help"],
