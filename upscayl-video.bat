@@ -7,4 +7,5 @@ if %ERRORLEVEL%==0 (
 ) else (
     python "%~dp0upscayl-video.py" %*
 )
-exit /b
+set "CODE=%ERRORLEVEL%"
+exit /b %CODE%

@@ -59,6 +59,7 @@ class TestManualWorkflow(unittest.TestCase):
         self.assertEqual(assemble.returncode, 0, assemble.stderr or assemble.stdout)
         output = job_dir / "output" / "test diakritika žluťoučký_upscaled.mp4"
         self.assertTrue(output.exists())
+        self.assertFalse((job_dir / "sequence").exists())
         info = ffprobe_json(self.ffprobe, output)
         video = [s for s in info["streams"] if s["codec_type"] == "video"][0]
         self.assertEqual((video["width"], video["height"]), (160, 120))

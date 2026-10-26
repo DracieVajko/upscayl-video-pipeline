@@ -69,6 +69,28 @@ class TestConfig(unittest.TestCase):
             cfg = load_config(path)
             self.assertEqual(cfg.ffmpeg.resolve(), fake.resolve())
 
+    def test_relative_work_dir_uses_config_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self.write_config(
+                td,
+                f"ffmpeg={FAKE_FFMPEG}\nffprobe={FAKE_FFMPEG}\nwork_dir=relwork\n",
+            )
+            cfg = load_config(path)
+            self.assertEqual(
+                cfg.work_dir.resolve(), (path.parent / "relwork").resolve()
+            )
+
+    def test_relative_work_dir_override_uses_cwd(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self.write_config(
+                td,
+                f"ffmpeg={FAKE_FFMPEG}\nffprobe={FAKE_FFMPEG}\n",
+            )
+            cfg = load_config(path, overrides={"work_dir": "reloverride"})
+            self.assertEqual(
+                cfg.work_dir.resolve(), (Path.cwd() / "reloverride").resolve()
+            )
+
     def test_unknown_keys_are_ignored(self):
         with tempfile.TemporaryDirectory() as td:
             path = self.write_config(

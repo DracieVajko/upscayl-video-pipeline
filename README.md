@@ -22,7 +22,7 @@ no-Python V2 implementation are the next plans.
   resume, and a sample-based disk estimate.
 - Manual batch upscaling in the Upscayl GUI.
 - Assembling standard or Upscayl-suffixed frame names, including one-level
-  mismatch subfolders.
+  output subfolders.
 - MP4 H.264, MP4 HEVC, MKV HEVC, and MOV ProRes.
 - NVIDIA NVENC, AMD AMF, or CPU encoding, with automatic fallback.
 - Audio copy/AAC/PCM/none, multiple tracks on request, subtitles, chapters.

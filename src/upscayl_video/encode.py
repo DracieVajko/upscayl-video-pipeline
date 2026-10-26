@@ -281,7 +281,8 @@ def _audio_compatible(container: str, codec: str) -> bool:
 def _subtitle_compatible(container: str, codec: str) -> bool:
     name = codec.lower()
     if container == "mkv":
-        return True
+        # Matroska supports text and image subtitles, but not mov_text.
+        return name != "mov_text"
     if container in {"mp4", "mov"}:
         return name == "mov_text"
     return False
@@ -372,6 +373,7 @@ def output_dimensions(
     allow_huge: bool,
 ) -> tuple[int, int]:
     if target_height is not None:
+        target_height = max(2, _even(target_height))
         if target_height > frame_height:
             raise ValidationError(
                 f"--target-height ({target_height}) exceeds the upscaled height ({frame_height})"
@@ -446,6 +448,9 @@ def build_assemble_command(
         str(frame_set.directory / pattern),
     ]
     if has_source_input:
+        range_start = float(job.get("range_start") or 0.0)
+        if range_start > 0:
+            args.extend(["-ss", f"{range_start:.6f}"])
         args.extend(["-i", str(job.source_path)])
 
     args.extend(["-map", "0:v:0"])
@@ -604,12 +609,13 @@ def plan_subtitles(
         image = [stream.index for stream in media.subtitles if _is_image_subtitle(stream.codec_name)]
         if image:
             raise ValidationError(
-                "Image subtitles cannot be converted to mov_text.",
+                "Image subtitles cannot be converted to a text format.",
                 hint="Use --preset mkv-hevc to keep them.",
             )
+        text_mode = "subrip" if preset.container == "mkv" else "mov_text"
         return SubtitlePlan(
             tuple(
-                SubtitleStreamPlan(stream.index, "mov_text")
+                SubtitleStreamPlan(stream.index, text_mode)
                 for stream in media.subtitles
             ),
             (),
@@ -618,7 +624,10 @@ def plan_subtitles(
     if preset.container == "mkv":
         return SubtitlePlan(
             tuple(
-                SubtitleStreamPlan(stream.index, "copy")
+                SubtitleStreamPlan(
+                    stream.index,
+                    "subrip" if stream.codec_name.lower() == "mov_text" else "copy",
+                )
                 for stream in media.subtitles
             ),
             (),

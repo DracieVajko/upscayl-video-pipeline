@@ -101,6 +101,28 @@ class TestCommand(unittest.TestCase):
             self.assertIn("scale=-2:1080", vf)
             self.assertIn("in_range=pc", vf)
 
+    def test_range_start_seeks_source_input(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = make_job(td)
+            job.data["range_start"] = "1.000"
+            media = make_media_info(Path("input.mp4"), audio=(StreamInfo(1, "aac", duration=5.0),))
+            frame_set = FrameSet(Path("frames"), "png", (1,), (Path("frames/frame_00000001.png"),))
+            args = build_assemble_command(
+                job, frame_set, media, PRESETS["mp4-h264"],
+                EncoderChoice("cpu", "libx264", ()),
+                AudioPlan((AudioStreamPlan(1, "aac"),), True),
+                SubtitlePlan((), ()),
+                EncodeOptions(encoder="cpu"), Path("out.mp4"),
+                frame_width=320, frame_height=240,
+            )
+            self.assertLess(args.index("-ss"), args.index(str(job.source_path)))
+            self.assertIn("1.000000", args[args.index("-ss") + 1])
+
+    def test_odd_target_height_is_rounded_up(self):
+        from upscayl_video.encode import output_dimensions
+        width, height = output_dimensions(320, 240, 121, False)
+        self.assertEqual((width, height), (164, 122))
+
     @patch("upscayl_video.encode.probe_media")
     def test_validate_output_wrong_width_raises(self, probe_media):
         with tempfile.TemporaryDirectory() as td:

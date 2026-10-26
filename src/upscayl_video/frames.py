@@ -73,7 +73,8 @@ def frame_pattern(fmt: str) -> str:
 
 def check_frame_signature(path: Path) -> bool:
     try:
-        header = Path(path).read_bytes()[:12]
+        with Path(path).open("rb") as handle:
+            header = handle.read(12)
     except OSError:
         return False
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -113,13 +114,16 @@ def scan_frames(directory: Path, *, recursive: bool = False) -> dict[int, list[P
 
 def count_contiguous_frames(directory: Path, extension: str) -> int:
     frames = scan_frames(directory, recursive=False)
+    wanted = extension.lower().lstrip(".")
     count = 0
     while True:
         index = count + 1
         paths = [
             path
             for path in frames.get(index, [])
-            if path.is_file() and path.stat().st_size > 0
+            if path.is_file()
+            and path.stat().st_size > 0
+            and path.suffix.lower().lstrip(".") == wanted
         ]
         if not paths:
             return count
@@ -402,14 +406,7 @@ def extract_frames(
         raise ValidationError(f"Unsupported decode mode: {decode}")
     fps = media.fps_decimal or 30.0
     total_duration = max(0.0, (end if end is not None else media.duration) - start)
-    full_range = start <= 0.001 and (
-        end is None or abs(end - media.duration) <= 0.001
-    )
-    expected = (
-        media.nb_frames
-        if full_range and media.nb_frames
-        else int(round(total_duration * fps))
-    )
+    expected = int(round(total_duration * fps))
     if expected <= 0:
         return 0
     if media.hdr and not tonemap:

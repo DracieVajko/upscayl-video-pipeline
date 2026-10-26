@@ -10,7 +10,8 @@ ffprobe=C:\FFMPEG\ffprobe.exe
 ```
 
 or pass `--ffmpeg`/`--ffprobe`. The tool also looks next to the project and in
-the project's parent directory. `doctor` prints the searched paths.
+the project's parent directory. A missing executable error prints the searched
+paths.
 
 ## Paths with spaces or non-ASCII characters
 

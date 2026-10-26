@@ -202,19 +202,34 @@ def load_config(
 
     merged = dict(DEFAULTS)
     merged.update(_read_values(config_path))
+    override_keys = set(overrides or {})
     if overrides:
         for key, value in overrides.items():
             if key in DEFAULTS and value is not None:
                 merged[key] = str(value)
 
+    def origin_base(key: str) -> Path:
+        return Path.cwd().resolve() if key in override_keys else config_dir
+
+    def executable_value(key: str) -> str:
+        value = merged[key].strip()
+        if (
+            key not in override_keys
+            and value
+            and _is_path_like(value)
+            and not Path(value).expanduser().is_absolute()
+        ):
+            return str(config_dir / value)
+        return value
+
     search_dirs = _search_dirs(base)
     ffmpeg = resolve_tool_path(
-        merged["ffmpeg"],
+        executable_value("ffmpeg"),
         names=_names_for("ffmpeg"),
         search_dirs=search_dirs,
     )
     ffprobe = resolve_tool_path(
-        merged["ffprobe"],
+        executable_value("ffprobe"),
         names=_names_for("ffprobe"),
         search_dirs=search_dirs,
     )
@@ -225,12 +240,12 @@ def load_config(
             return None
         path = Path(value).expanduser()
         if not path.is_absolute():
-            path = base / path
+            path = origin_base(key) / path
         return path.resolve()
 
     work_dir_value = Path(merged["work_dir"]).expanduser()
     if not work_dir_value.is_absolute():
-        work_dir_value = base / work_dir_value
+        work_dir_value = origin_base("work_dir") / work_dir_value
 
     default_scale = _parse_int(merged["default_scale"], "default_scale")
     if default_scale not in {2, 3, 4}:

@@ -19,6 +19,24 @@ All notable changes to this project will be documented here.
 - Windows `.bat` and Unix `.sh` launchers.
 - Usage and troubleshooting documentation.
 
+### Fixed
+
+- Refuse to write the output over the source video; enforce the preset extension.
+- Encode through a partial file and atomically replace the final output; delete
+  partial files on failure and clear stale `.done_assemble` markers.
+- Use video duration (tail packet probe when needed) instead of packet count, so
+  `--fps`, VFR, and Matroska audio-tail sources do not lose frames.
+- Seek the source input with `-ss` for trimmed jobs; re-encode copied audio as
+  AAC for a sample-accurate start.
+- Honor a job's stored `--target-height`; round odd target heights up.
+- Write BT.709 SDR color tags after `--tonemap`.
+- Convert `mov_text` subtitles to `subrip` in MKV instead of failing.
+- Reject partial upscaled frame sets before encoding; never shrink `frame_count`.
+- Resolve config-relative paths against the config directory and CLI-relative
+  paths against the current directory.
+- Use config `default_audio`/`default_subs`, delete transient `sequence/`, and
+  return Windows `.bat` exit codes.
+
 ### Validated
 
 - 119 automated tests pass.

@@ -14,6 +14,7 @@ PCM = StreamInfo(1, "pcm_s16le", channels=2)
 FLAC = StreamInfo(1, "flac", channels=2)
 SRT = StreamInfo(2, "subrip")
 PGS = StreamInfo(2, "hdmv_pgs_subtitle")
+MOV_TEXT = StreamInfo(2, "mov_text")
 
 
 class TestAudio(unittest.TestCase):
@@ -79,6 +80,21 @@ class TestSubtitles(unittest.TestCase):
         media = make_media_info(Path("x.mp4"), subtitles=(PGS,))
         with self.assertRaises(ValidationError):
             plan_subtitles(media, PRESETS["mp4-h264"], "copy", Logger(quiet=True))
+
+    def test_mov_text_in_mkv_auto_becomes_subrip(self):
+        media = make_media_info(Path("x.mkv"), subtitles=(MOV_TEXT,))
+        plan = plan_subtitles(media, PRESETS["mkv-hevc"], "auto", Logger(quiet=True))
+        self.assertEqual(plan.streams[0].mode, "subrip")
+
+    def test_mov_text_in_mkv_copy_raises(self):
+        media = make_media_info(Path("x.mkv"), subtitles=(MOV_TEXT,))
+        with self.assertRaises(ValidationError):
+            plan_subtitles(media, PRESETS["mkv-hevc"], "copy", Logger(quiet=True))
+
+    def test_srt_in_mkv_convert_uses_subrip(self):
+        media = make_media_info(Path("x.mkv"), subtitles=(SRT,))
+        plan = plan_subtitles(media, PRESETS["mkv-hevc"], "convert", Logger(quiet=True))
+        self.assertEqual(plan.streams[0].mode, "subrip")
 
 
 if __name__ == "__main__":

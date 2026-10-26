@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import glob
+import os
 import shutil
 from dataclasses import dataclass
 from fractions import Fraction
@@ -33,6 +34,7 @@ from .frames import (
     build_sequence,
     count_contiguous_frames,
     extract_frames,
+    frame_pattern,
     scan_frames,
     validate_frame_set,
 )
@@ -205,6 +207,8 @@ def _resolve_scale(media: MediaInfo, options: SplitOptions, job: Job, config: Co
     if target is None:
         raw_target = job.get("target_height")
         target = int(raw_target) if raw_target not in {None, ""} else None
+    if target is not None and target % 2:
+        target += 1
     scale = options.scale
     if scale is None:
         raw_scale = job.get("scale")
@@ -243,6 +247,8 @@ def run_split(
     for input_path in inputs:
         source = Path(input_path).expanduser().resolve()
         media = probe_media(config.ffprobe, source, logger)
+        if media.duration <= 0:
+            raise ValidationError(f"Could not determine a positive video duration: {source}")
         if options.fps:
             fps_num, fps_den = _parse_fps_override(options.fps)
             media = dataclasses.replace(media, fps_num=fps_num, fps_den=fps_den)
@@ -283,6 +289,14 @@ def run_split(
                         raise ValidationError("Aborted by user.")
                 _clear_split_outputs(job)
 
+        if options.target_height is not None and options.target_height % 2:
+            logger.warn(
+                f"--target-height {options.target_height} is odd; rounding up to "
+                f"{options.target_height + 1}"
+            )
+            options = dataclasses.replace(
+                options, target_height=options.target_height + 1
+            )
         scale, target_height = _resolve_scale(media, options, job, config)
         if media.hdr and not options.tonemap:
             raise ValidationError(
@@ -293,8 +307,19 @@ def run_split(
             logger.warn(
                 "10-bit SDR source: frames will be converted to 8-bit RGB for Upscayl."
             )
+        if media.sample_aspect_ratio not in {None, "", "0:1", "1:1"}:
+            logger.warn(
+                f"Anamorphic source detected (SAR {media.sample_aspect_ratio}); "
+                "the output uses square pixels and may not preserve display aspect ratio."
+            )
 
         job.update_from_media(media)
+        if options.tonemap:
+            job.set("color_primaries", "bt709")
+            job.set("color_trc", "bt709")
+            job.set("colorspace", "bt709")
+            job.set("color_range", "tv")
+            job.set("hdr", False)
         job.set("duration", f"{processed_duration:.3f}")
         job.set("range_start", f"{start:.3f}")
         job.set("range_end", "" if options.end is None else f"{end:.3f}")
@@ -302,6 +327,9 @@ def run_split(
         job.set("target_height", "" if target_height is None else target_height)
         job.set("model", options.model)
         job.set("frame_format", options.format.lower())
+        job.set("frame_pattern", frame_pattern(options.format))
+        job.set("chunk_seconds", 0)
+        job.set("chunk_frames", 0)
         job.set("denoise", options.denoise)
         job.set("decode", options.decode)
         job.set("tonemap", options.tonemap)
@@ -310,12 +338,7 @@ def run_split(
         if not dry_run:
             job.save()
 
-        full_range = start <= 0.001 and abs(end - media.duration) <= 0.001
-        expected_frames = (
-            media.nb_frames
-            if full_range and media.nb_frames
-            else int(round(processed_duration * media.fps_decimal))
-        )
+        expected_frames = int(round(processed_duration * media.fps_decimal))
         sample_bytes = sample_frame_bytes(
             job.source_path,
             job,
@@ -346,23 +369,32 @@ def run_split(
         if dry_run:
             continue
 
-        count = extract_frames(
-            job,
-            media,
-            config,
-            fmt=options.format,
-            jpeg_quality=options.jpeg_quality,
-            png_compression=options.png_compression,
-            denoise=options.denoise,
-            tonemap=options.tonemap,
-            decode=options.decode,
-            start=start,
-            end=end,
-            verify=options.verify_frames,
-            logger=logger,
-        )
+        try:
+            count = extract_frames(
+                job,
+                media,
+                config,
+                fmt=options.format,
+                jpeg_quality=options.jpeg_quality,
+                png_compression=options.png_compression,
+                denoise=options.denoise,
+                tonemap=options.tonemap,
+                decode=options.decode,
+                start=start,
+                end=end,
+                verify=options.verify_frames,
+                logger=logger,
+            )
+        except PipelineError as exc:
+            job.set("last_error", str(exc)[:500])
+            try:
+                job.save()
+            except OSError:
+                pass
+            raise
         job.set("frame_count", count)
         job.set("upscaled_count", 0)
+        job.set("last_error", "")
         job.save()
         job.mark_done("split")
         jobs.append(job)
@@ -376,6 +408,8 @@ def resolve_jobs(
     all_jobs: bool,
 ) -> list[Job]:
     if all_jobs:
+        if args:
+            raise UsageError("Use either job folders or --all/--all-jobs, not both.")
         jobs = find_jobs(config.work_dir)
         if not jobs:
             raise UsageError(f"No jobs found in: {config.work_dir}")
@@ -409,6 +443,34 @@ def _collision_path(path: Path) -> Path:
     raise ValidationError(f"Could not find a free output name for: {path}")
 
 
+def _validate_output_path(path: Path, job: Job, extension: str) -> Path:
+    resolved = path.resolve()
+    if resolved == job.source_path.resolve():
+        raise ValidationError(
+            "Output path is the source video; refusing to overwrite it.",
+            hint="Choose a different --output path.",
+        )
+    for directory in (
+        job.frames_dir,
+        job.upscaled_dir,
+        job.sequence_dir,
+        job.chunks_dir,
+    ):
+        try:
+            resolved.relative_to(directory.resolve())
+            raise ValidationError(
+                f"Output must not be inside the job's intermediate folder: {directory}"
+            )
+        except ValueError:
+            pass
+    expected_suffix = f".{extension.lower()}"
+    if resolved.suffix.lower() != expected_suffix:
+        raise ValidationError(
+            f"Output extension {resolved.suffix or '(none)'} does not match preset extension {expected_suffix}"
+        )
+    return path
+
+
 def _resolve_output_path(
     job: Job,
     extension: str,
@@ -420,9 +482,8 @@ def _resolve_output_path(
     requested = options.output
     if requested is None:
         default = _default_output(job, extension)
-        if default.exists() and not options.force:
-            return _collision_path(default)
-        return default
+        path = _collision_path(default) if (default.exists() and not options.force) else default
+        return _validate_output_path(path, job, extension)
 
     requested = Path(requested).expanduser()
     if not requested.is_absolute():
@@ -440,16 +501,15 @@ def _resolve_output_path(
 
     if treat_as_directory:
         path = requested / default_name
-        if path.exists() and not options.force:
-            return _collision_path(path)
-        return path
+        path = _collision_path(path) if (path.exists() and not options.force) else path
+        return _validate_output_path(path, job, extension)
 
     if requested.exists() and not options.force:
         raise ValidationError(
             f"Output already exists: {requested}",
             hint="Use --force to overwrite it.",
         )
-    return requested
+    return _validate_output_path(requested, job, extension)
 
 
 def _cleanup_intermediates(job: Job) -> None:
@@ -470,7 +530,20 @@ def run_assemble(
     outputs: list[Path] = []
     multiple = len(jobs) > 1
     for job in jobs:
+        temp_output: Path | None = None
         try:
+            job_options = dataclasses.replace(
+                options,
+                target_height=(
+                    options.target_height
+                    if options.target_height is not None
+                    else (job.get_int("target_height") or None)
+                ),
+            )
+            if job_options.ten_bit and job.get_bool("tonemap"):
+                raise ValidationError(
+                    "--10bit cannot be combined with a tonemapped job."
+                )
             if not dry_run:
                 logger.set_log_file(job.logs_dir / "assemble.log")
             if job.source_changed() and not options.force:
@@ -501,19 +574,13 @@ def run_assemble(
                     hint="Run Upscayl on the frames folder first, or pass --upscaled-dir.",
                 )
 
+            stored_count = job.get_int("frame_count")
             frame_set = validate_frame_set(
                 upscaled_dir,
-                expected=None,
+                expected=stored_count or None,
                 pick=options.pick,
                 verify=options.verify_frames,
             )
-            stored_count = job.get_int("frame_count")
-            if stored_count and frame_set.count != stored_count:
-                logger.warn(
-                    f"Upscaled frame count {frame_set.count} differs from job frame_count "
-                    f"{stored_count}; updating the job."
-                )
-                job.set("frame_count", frame_set.count)
 
             normalized = frame_set if dry_run else build_sequence(frame_set, job, logger)
             frame_width, frame_height = probe_first_frame_dimensions(
@@ -524,12 +591,20 @@ def run_assemble(
             expected_width, expected_height = output_dimensions(
                 frame_width,
                 frame_height,
-                options.target_height,
-                options.allow_huge,
+                job_options.target_height,
+                job_options.allow_huge,
             )
 
-            audio_mode = options.audio or preset.default_audio
-            subs_mode = options.subs or preset.default_subs
+            audio_mode = options.audio or (
+                config.default_audio
+                if config.default_audio != "auto"
+                else preset.default_audio
+            )
+            subs_mode = options.subs or (
+                config.default_subs
+                if config.default_subs != "auto"
+                else preset.default_subs
+            )
             audio_plan = plan_audio(
                 media,
                 preset,
@@ -537,21 +612,50 @@ def run_assemble(
                 options.audio_bitrate,
                 options.all_audio,
             )
+            range_start = float(job.get("range_start") or 0.0)
+            if range_start > 0:
+                if any(stream.mode == "copy" for stream in audio_plan.streams):
+                    logger.warn(
+                        "Trimming active: copied audio is re-encoded as AAC for a sample-accurate start."
+                    )
+                    audio_plan = dataclasses.replace(
+                        audio_plan,
+                        streams=tuple(
+                            dataclasses.replace(stream, mode="aac")
+                            if stream.mode == "copy"
+                            else stream
+                            for stream in audio_plan.streams
+                        ),
+                    )
+                if media.chapters:
+                    logger.warn(
+                        "Chapters come from the source and may not be shifted for the trimmed range."
+                    )
             subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
             candidates = encoder_candidates(preset, options.encoder, config.ffmpeg)
-            output = _resolve_output_path(
+            final_output = _resolve_output_path(
                 job,
                 preset.extension,
-                options,
+                job_options,
                 multiple_jobs=multiple,
             )
 
             if dry_run:
-                logger.info(f"Would assemble {job.job_id} -> {output}")
-                outputs.append(output)
+                logger.info(f"Would assemble {job.job_id} -> {final_output}")
+                outputs.append(final_output)
                 continue
 
-            output.parent.mkdir(parents=True, exist_ok=True)
+            temp_output = final_output.with_name(
+                f"{final_output.stem}.partial{final_output.suffix}"
+            )
+            try:
+                final_output.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValidationError(
+                    f"Could not create output directory: {final_output.parent}",
+                    hint=str(exc),
+                ) from exc
+            job.clear_stage("assemble")
             last_error: CommandError | None = None
             for index, candidate in enumerate(candidates):
                 command = build_assemble_command(
@@ -562,8 +666,8 @@ def run_assemble(
                     candidate,
                     audio_plan,
                     subtitle_plan,
-                    options,
-                    output,
+                    job_options,
+                    temp_output,
                     frame_width=frame_width,
                     frame_height=frame_height,
                 )
@@ -592,24 +696,41 @@ def run_assemble(
 
             validate_output(
                 config.ffprobe,
-                output,
+                temp_output,
                 job,
                 media,
-                options,
+                job_options,
                 expected_width,
                 expected_height,
                 audio_plan.enabled,
                 len(subtitle_plan.streams),
                 logger,
             )
+            os.replace(temp_output, final_output)
+            temp_output = None
+            shutil.rmtree(job.sequence_dir, ignore_errors=True)
             job.set("upscaled_count", frame_set.count)
+            job.set("preset", preset.name)
+            job.set("encoder", options.encoder)
+            job.set("encoder_codec", candidate.video_codec)
+            job.set("audio", audio_mode)
+            job.set("audio_bitrate", options.audio_bitrate)
+            job.set("all_audio", options.all_audio)
+            job.set("subs", subs_mode)
+            job.set("ten_bit", options.ten_bit)
+            job.set("target_height", job_options.target_height or "")
             job.set("last_error", "")
             job.save()
             job.mark_done("assemble")
             if options.cleanup:
                 _cleanup_intermediates(job)
-            outputs.append(output)
+            outputs.append(final_output)
         except PipelineError as exc:
+            if temp_output is not None and temp_output.exists():
+                try:
+                    temp_output.unlink()
+                except OSError:
+                    pass
             job.set("last_error", str(exc)[:500])
             try:
                 job.save()
@@ -628,16 +749,12 @@ def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None
     for job in jobs:
         frame_format = job.get("frame_format") or "png"
         frames = count_contiguous_frames(job.frames_dir, frame_format)
-        if frames == 0:
-            frames = job.get_int("frame_count")
         upscaled = sum(
             1
             for paths in scan_frames(job.upscaled_dir, recursive=True).values()
             for path in paths
             if path.is_file() and path.stat().st_size > 0
         )
-        if upscaled == 0:
-            upscaled = job.get_int("upscaled_count")
         outputs = sorted(
             path
             for path in job.output_dir.glob("*")
@@ -718,8 +835,13 @@ def run_clean(
         if include_output:
             targets.add(job.output_dir)
 
+        source = job.source_path.resolve()
         for target in sorted(targets, key=lambda path: str(path)):
             target = ensure_within(target, job.path)
+            if source == target or source.is_relative_to(target):
+                raise ValidationError(
+                    f"Refusing to delete a folder that contains the source video: {target}"
+                )
             if not target.exists():
                 continue
             if dry_run:

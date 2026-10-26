@@ -121,7 +121,8 @@ class Job:
                     job = cls.load(candidate)
                 else:
                     job = cls(candidate, {"source": str(source)})
-                job.write_source_file()
+                if create:
+                    job.write_source_file()
                 logger.debug(f"Reusing job: {candidate}")
                 return job
             candidate = work_dir / f"{base_id}_{suffix}"
@@ -134,6 +135,19 @@ class Job:
                 "job_id": candidate.name,
                 "source": str(source),
                 "created": _now(),
+                "frame_pattern": "",
+                "frame_count": "0",
+                "upscaled_count": "0",
+                "chunk_seconds": "0",
+                "chunk_frames": "0",
+                "preset": "",
+                "encoder": "",
+                "audio": "",
+                "audio_bitrate": "",
+                "all_audio": "0",
+                "subs": "",
+                "ten_bit": "0",
+                "target_height": "",
             },
         )
         if create:

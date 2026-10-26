@@ -56,6 +56,22 @@ class TestJob(unittest.TestCase):
         first.save()
         self.assertEqual(Job.load(first.path).get("future_key"), "value")
 
+    def test_default_contract_keys(self):
+        job = Job.create_or_open(self.work, self.source, self.logger)
+        for key in (
+            "frame_pattern",
+            "frame_count",
+            "upscaled_count",
+            "chunk_seconds",
+            "chunk_frames",
+            "preset",
+            "encoder",
+            "audio",
+            "subs",
+            "ten_bit",
+        ):
+            self.assertIn(key, job.data)
+
     def test_markers(self):
         job = Job.create_or_open(self.work, self.source, self.logger)
         self.assertFalse(job.is_done("split"))

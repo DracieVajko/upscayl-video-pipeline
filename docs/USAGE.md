@@ -66,7 +66,9 @@ upscayl-video split <video...> \
 - `--scale` is the Upscayl output scale (2, 3, or 4); it is recorded for the
   later upscale and does not change the extracted frames.
 - `--target-height` chooses the smallest scale that reaches the target. The
-  assembler downscales to the exact height with Lanczos.
+  assembler downscales to the exact height with Lanczos, using the value stored
+  in `job.txt`; you do not need to repeat the flag on `assemble`. Odd values are
+  rounded up to an even height.
 - `--model` is recorded in `job.txt` for the later upscale.
 - `--verify-frames` checks PNG/JPEG magic instead of only file size.
 - `--force` rebuilds a job whose settings changed.
@@ -94,9 +96,15 @@ upscayl-video assemble <job...> [--all] \
 - `--subs auto` copies subtitles in MKV and converts text subtitles to
   `mov_text` in MP4/MOV. Image subtitles (PGS/DVD) are dropped in MP4/MOV with
   a warning; use `mkv-hevc` to keep them.
+- `--output` must not point at the source video and must use the preset's
+  extension (`.mp4`, `.mkv`, or `.mov`). The encoder writes a `*.partial.*`
+  file and atomically replaces the final output only after validation.
 - `--upscaled-dir` points at a custom folder containing Upscayl output.
 - Upscayl GUI suffixes such as `_upscayl_4x_upscayl-standard-4x` are accepted.
-  Non-standard names are normalized through a temporary `sequence/` folder.
+  Non-standard names are normalized through a temporary `sequence/` folder,
+  which is deleted after a successful encode.
+- A trimmed job (`--start`/`--end`) seeks the source audio and subtitles too.
+  Copied audio is re-encoded as AAC when a trim is active.
 - `--cleanup` deletes `frames/`, `upscaled/`, and `sequence/` after a
   successful assemble. The output is kept.
 - `--tonemap` is rejected: tonemapping belongs to the split stage.

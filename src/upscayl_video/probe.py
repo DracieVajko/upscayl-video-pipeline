@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -45,6 +45,7 @@ class MediaInfo:
     source_size: int
     source_mtime: int
     nb_frames: int | None = None
+    sample_aspect_ratio: str | None = None
 
     @property
     def fps_decimal(self) -> float:
@@ -186,13 +187,17 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
         if stream.get("codec_type") == "subtitle"
     )
 
+    width = _as_int(video.get("width"))
+    height = _as_int(video.get("height"))
+    if width <= 0 or height <= 0:
+        raise ValidationError(f"Invalid video dimensions in: {source}")
     return MediaInfo(
         source=source_path,
         duration=duration,
         fps_num=fps_num,
         fps_den=fps_den,
-        width=_as_int(video.get("width")),
-        height=_as_int(video.get("height")),
+        width=width,
+        height=height,
         pix_fmt=pix_fmt,
         video_index=_as_int(video.get("index")),
         audio=audio,
@@ -207,6 +212,7 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
         source_size=source_path.stat().st_size if exists else 0,
         source_mtime=int(source_path.stat().st_mtime) if exists else 0,
         nb_frames=packet_count or None,
+        sample_aspect_ratio=_clean(video.get("sample_aspect_ratio")),
     )
 
 
@@ -244,6 +250,54 @@ def probe_first_frame_dimensions(
     raise ValidationError(f"Could not parse frame dimensions: {path}")
 
 
+def _last_video_end(
+    ffprobe: Path,
+    source: Path,
+    format_duration: float,
+    logger: Logger,
+) -> float | None:
+    if format_duration <= 0:
+        return None
+    start = max(0.0, format_duration - 2.0)
+    command = [
+        str(ffprobe),
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=pts_time,duration_time",
+        "-of",
+        "csv=p=0",
+        "-read_intervals",
+        f"{start:.3f}%+2.0",
+        str(source),
+    ]
+    try:
+        result = run_command(command, logger=logger, check=False)
+    except CommandError:
+        return None
+    if result.returncode != 0:
+        return None
+    last_end: float | None = None
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if not parts or not parts[0]:
+            continue
+        try:
+            pts = float(parts[0])
+        except ValueError:
+            continue
+        duration = 0.0
+        if len(parts) > 1:
+            try:
+                duration = float(parts[1])
+            except ValueError:
+                duration = 0.0
+        last_end = pts + duration
+    return last_end
+
+
 def probe_media(ffprobe: Path, source: Path, logger: Logger) -> MediaInfo:
     source = Path(source)
     command = [
@@ -272,4 +326,18 @@ def probe_media(ffprobe: Path, source: Path, logger: Logger) -> MediaInfo:
             f"ffprobe returned invalid JSON for: {source}",
             hint=str(exc),
         ) from exc
-    return media_info_from_json(source, data)
+    info = media_info_from_json(source, data)
+    video = next(
+        (
+            stream
+            for stream in (data.get("streams") or [])
+            if stream.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if video is not None and not _as_float(video.get("duration"), 0.0):
+        format_duration = _as_float((data.get("format") or {}).get("duration"), 0.0)
+        end = _last_video_end(ffprobe, source, format_duration, logger)
+        if end and end > 0:
+            info = replace(info, duration=end)
+    return info

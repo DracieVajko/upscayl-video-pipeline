@@ -62,6 +62,27 @@ class TestSplit(unittest.TestCase):
         self.assertTrue(jobs[0].is_done("split"))
         self.assertTrue((jobs[0].frames_dir / "frame_00000001.png").exists())
 
+    def test_fps_override_resamples_to_requested_rate(self):
+        cfg = load_config(None, overrides={"ffmpeg": self.ffmpeg, "ffprobe": self.ffprobe, "work_dir": str(self.root / "fps-work")})
+        jobs = run_split([self.clip], cfg, self.options(fps="60"), Logger(quiet=True))
+        self.assertEqual(jobs[0].get_int("frame_count"), 60)
+        self.assertEqual(jobs[0].get("fps"), "60/1")
+
+    def test_tonemap_writes_sdr_color_tags(self):
+        cfg = load_config(None, overrides={"ffmpeg": self.ffmpeg, "ffprobe": self.ffprobe, "work_dir": str(self.root / "tm-work")})
+        media = make_media_info(self.clip, hdr=True, color_trc="smpte2084")
+        with patch("upscayl_video.pipeline.probe_media", return_value=media), \
+             patch("upscayl_video.pipeline.sample_frame_bytes", return_value=1000), \
+             patch("upscayl_video.pipeline.extract_frames", return_value=1):
+            job = run_split(
+                [self.clip], cfg, self.options(tonemap=True), Logger(quiet=True)
+            )[0]
+        self.assertEqual(job.get("hdr"), "0")
+        self.assertEqual(job.get("color_primaries"), "bt709")
+        self.assertEqual(job.get("color_trc"), "bt709")
+        self.assertEqual(job.get("colorspace"), "bt709")
+        self.assertEqual(job.get("color_range"), "tv")
+
     def test_dry_run_creates_no_job(self):
         work = self.root / "dry-work"
         cfg = load_config(None, overrides={"ffmpeg": self.ffmpeg, "ffprobe": self.ffprobe, "work_dir": str(work)})

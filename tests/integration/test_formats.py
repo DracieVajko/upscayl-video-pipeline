@@ -1,3 +1,4 @@
+import re
 import subprocess
 import tempfile
 import unittest
@@ -88,6 +89,33 @@ def copy_frames(job) -> None:
         (job.upscaled_dir / frame.name).write_bytes(frame.read_bytes())
 
 
+def scale_frames(ffmpeg: str, source: Path, target: Path, width: int, height: int) -> None:
+    target.mkdir(exist_ok=True)
+    run(
+        ffmpeg,
+        [
+            "-framerate", "30", "-start_number", "1",
+            "-i", str(source / "frame_%08d.png"),
+            "-vf", f"scale={width}:{height}",
+            str(target / "frame_%08d.png"),
+        ],
+    )
+
+
+def make_trim_clip(ffmpeg: str, path: Path) -> None:
+    audio = "aevalsrc=if(between(t\\,1\\,2)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d=3"
+    run(
+        ffmpeg,
+        [
+            "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=30",
+            "-f", "lavfi", "-i", audio,
+            "-t", "3", "-c:v", "libx264", "-preset", "ultrafast",
+            "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            "-b:a", "128k", "-shortest", str(path),
+        ],
+    )
+
+
 class TestFormatsIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -103,11 +131,15 @@ class TestFormatsIntegration(unittest.TestCase):
         cls.mkv = cls.root / "clip_subs.mkv"
         cls.odd = cls.root / "odd.mkv"
         cls.tenbit = cls.root / "tenbit.mkv"
+        cls.small = cls.root / "small.mp4"
+        cls.trim = cls.root / "trim.mkv"
         make_clip(cls.ffmpeg, cls.clip, duration=1.0, size="160x120", fps=30)
         make_clip(cls.ffmpeg, cls.clip_noaudio, duration=1.0, size="160x120", fps=30, audio=False)
+        make_clip(cls.ffmpeg, cls.small, duration=1.0, size="80x60", fps=30)
         make_mkv_with_subs(cls.ffmpeg, cls.clip, cls.mkv)
         make_odd_clip(cls.ffmpeg, cls.odd)
         make_10bit_clip(cls.ffmpeg, cls.tenbit)
+        make_trim_clip(cls.ffmpeg, cls.trim)
 
     @classmethod
     def tearDownClass(cls):
@@ -192,6 +224,69 @@ class TestFormatsIntegration(unittest.TestCase):
         codecs = {stream["codec_type"]: stream["codec_name"] for stream in info["streams"]}
         self.assertEqual(codecs["video"], "hevc")
         self.assertEqual(codecs["audio"], "aac")
+
+    def test_stored_target_height_is_used_by_assemble(self):
+        cfg = self.config("target-work")
+        job = run_split(
+            [self.small],
+            cfg,
+            SplitOptions(
+                fps=None, start=None, end=None, format="png", jpeg_quality=1,
+                png_compression=3, denoise="none", tonemap=False, decode="cpu",
+                scale=None, target_height=90, model="upscayl-standard-4x",
+                verify_frames=False, recursive=False, force=False,
+            ),
+            self.logger,
+        )[0]
+        scale_frames(self.ffmpeg, job.frames_dir, job.upscaled_dir, 160, 120)
+        output = run_assemble(
+            [job],
+            cfg,
+            EncodeOptions(
+                preset="mp4-h264", encoder="cpu", audio="none", subs="none"
+            ),
+            self.logger,
+        )[0]
+        info = ffprobe_json(self.ffprobe, output)
+        video = [s for s in info["streams"] if s["codec_type"] == "video"][0]
+        self.assertEqual((video["width"], video["height"]), (120, 90))
+
+    def test_trim_seeks_audio_to_the_range(self):
+        cfg = self.config("trim-work")
+        job = run_split(
+            [self.trim],
+            cfg,
+            SplitOptions(
+                fps=None, start="1", end="2", format="png", jpeg_quality=1,
+                png_compression=3, denoise="none", tonemap=False, decode="cpu",
+                scale=2, target_height=None, model="upscayl-standard-4x",
+                verify_frames=False, recursive=False, force=False,
+            ),
+            self.logger,
+        )[0]
+        copy_frames(job)
+        output = run_assemble(
+            [job],
+            cfg,
+            EncodeOptions(
+                preset="mp4-h264", encoder="cpu", audio="copy", subs="auto"
+            ),
+            self.logger,
+        )[0]
+        probe = subprocess.run(
+            [
+                self.ffmpeg, "-hide_banner", "-i", str(output),
+                "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-",
+            ],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        match = re.search(r"mean_volume:\s*(-?[0-9.]+) dB", probe.stderr)
+        self.assertIsNotNone(match, probe.stderr)
+        self.assertGreater(float(match.group(1)), -40.0)
 
     def test_no_audio(self):
         cfg = self.config("mute-work")

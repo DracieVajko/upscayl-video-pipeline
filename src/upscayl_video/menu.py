@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from .config import Config
 from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
@@ -128,6 +126,12 @@ def run_menu(config: Config | None, logger: Logger) -> int:
             def action() -> None:
                 job_path = _ask("Job folder")
                 if not job_path:
+                    return
+                answer = input(
+                    "Delete all intermediate frames for this job? [y/N] "
+                ).strip().lower()
+                if answer not in {"y", "yes"}:
+                    print("Cancelled.")
                     return
                 jobs = resolve_jobs([job_path], config, all_jobs=False)
                 run_clean(
