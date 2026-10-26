@@ -69,6 +69,70 @@ class TestCli(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertTrue((work / "clip" / "frames" / "frame_00000001.png").exists())
 
+    def test_assemble_help(self):
+        result = subprocess.run(
+            [sys.executable, str(LAUNCHER), "assemble", "--help"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--preset", result.stdout)
+
+    def test_assemble_command_and_explicit_collision(self):
+        ffmpeg = find_ffmpeg()
+        if ffmpeg is None:
+            self.skipTest("ffmpeg not available")
+        ffprobe = find_ffprobe(ffmpeg)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            clip = root / "clip.mp4"
+            work = root / "work"
+            make_clip(ffmpeg, clip, duration=1.0, size="160x120", fps=30)
+            split = subprocess.run(
+                [
+                    sys.executable, str(LAUNCHER), "split", str(clip),
+                    "--work-dir", str(work), "--ffmpeg", ffmpeg,
+                    "--ffprobe", ffprobe, "--decode", "cpu",
+                ],
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=False,
+            )
+            self.assertEqual(split.returncode, 0, split.stderr or split.stdout)
+            job_dir = work / "clip"
+            frames = sorted((job_dir / "frames").glob("frame_*.png"))
+            upscaled = job_dir / "upscaled"
+            upscaled.mkdir()
+            for frame in frames:
+                (upscaled / frame.name).write_bytes(frame.read_bytes())
+
+            assemble = subprocess.run(
+                [
+                    sys.executable, str(LAUNCHER), "assemble", str(job_dir),
+                    "--ffmpeg", ffmpeg, "--ffprobe", ffprobe,
+                    "--encoder", "cpu", "--preset", "mp4-h264",
+                ],
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=False,
+            )
+            self.assertEqual(assemble.returncode, 0, assemble.stderr or assemble.stdout)
+            output = job_dir / "output" / "clip_upscaled.mp4"
+            self.assertTrue(output.exists())
+
+            collision = subprocess.run(
+                [
+                    sys.executable, str(LAUNCHER), "assemble", str(job_dir),
+                    "--ffmpeg", ffmpeg, "--ffprobe", ffprobe,
+                    "--encoder", "cpu", "--preset", "mp4-h264",
+                    "--output", str(output),
+                ],
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=False,
+            )
+            self.assertEqual(collision.returncode, 4, collision.stderr or collision.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

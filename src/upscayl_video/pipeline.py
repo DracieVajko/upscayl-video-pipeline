@@ -12,11 +12,27 @@ from typing import Sequence
 
 from .config import Config
 from .disk import check_estimate, estimate_disk, free_bytes, sample_frame_bytes
-from .errors import UsageError, ValidationError
-from .frames import extract_frames, scan_frames
-from .job import Job
-from .probe import MediaInfo, parse_rational, probe_media
-from .util import Logger, format_duration, human_bytes, parse_time
+from .encode import (
+    EncodeOptions,
+    build_assemble_command,
+    encoder_candidates,
+    output_dimensions,
+    plan_audio,
+    plan_subtitles,
+    resolve_preset,
+    validate_output,
+)
+from .errors import (
+    CommandError,
+    EncodeError,
+    PipelineError,
+    UsageError,
+    ValidationError,
+)
+from .frames import build_sequence, extract_frames, scan_frames, validate_frame_set
+from .job import Job, find_jobs
+from .probe import MediaInfo, parse_rational, probe_first_frame_dimensions, probe_media
+from .util import Logger, format_duration, human_bytes, parse_time, run_command
 
 _VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
@@ -333,3 +349,253 @@ def run_split(
         job.mark_done("split")
         jobs.append(job)
     return jobs
+
+
+def resolve_jobs(
+    args: Sequence[str],
+    config: Config,
+    *,
+    all_jobs: bool,
+) -> list[Job]:
+    if all_jobs:
+        jobs = find_jobs(config.work_dir)
+        if not jobs:
+            raise UsageError(f"No jobs found in: {config.work_dir}")
+        return jobs
+    if not args:
+        raise UsageError(
+            "No job folders given.",
+            hint="Pass a job folder or use --all.",
+        )
+    jobs: list[Job] = []
+    seen: set[Path] = set()
+    for raw in args:
+        job = Job.load(Path(raw).expanduser().resolve())
+        if job.path not in seen:
+            seen.add(job.path)
+            jobs.append(job)
+    return sorted(jobs, key=lambda item: item.job_id.lower())
+
+
+def _default_output(job: Job, extension: str) -> Path:
+    return job.output_dir / f"{job.source_path.stem}_upscaled.{extension}"
+
+
+def _collision_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise ValidationError(f"Could not find a free output name for: {path}")
+
+
+def _resolve_output_path(
+    job: Job,
+    extension: str,
+    options: EncodeOptions,
+    *,
+    multiple_jobs: bool,
+) -> Path:
+    default_name = f"{job.source_path.stem}_upscaled.{extension}"
+    requested = options.output
+    if requested is None:
+        default = _default_output(job, extension)
+        if default.exists() and not options.force:
+            return _collision_path(default)
+        return default
+
+    requested = Path(requested).expanduser()
+    if not requested.is_absolute():
+        requested = (Path.cwd() / requested).resolve()
+
+    if requested.exists() and not requested.is_dir() and requested.suffix == "":
+        raise UsageError(f"Output path is a file without a suffix, not a directory: {requested}")
+
+    treat_as_directory = requested.is_dir() or requested.suffix == ""
+    if multiple_jobs and not treat_as_directory:
+        raise UsageError(
+            "With multiple jobs, --output must be a directory.",
+            hint="Pass a directory (or omit --output).",
+        )
+
+    if treat_as_directory:
+        path = requested / default_name
+        if path.exists() and not options.force:
+            return _collision_path(path)
+        return path
+
+    if requested.exists() and not options.force:
+        raise ValidationError(
+            f"Output already exists: {requested}",
+            hint="Use --force to overwrite it.",
+        )
+    return requested
+
+
+def _cleanup_intermediates(job: Job) -> None:
+    for directory in (job.frames_dir, job.upscaled_dir, job.sequence_dir):
+        if directory.exists():
+            shutil.rmtree(directory)
+
+
+def run_assemble(
+    jobs: Sequence[Job],
+    config: Config,
+    options: EncodeOptions,
+    logger: Logger,
+    *,
+    dry_run: bool = False,
+) -> list[Path]:
+    preset = resolve_preset(options.preset)
+    outputs: list[Path] = []
+    multiple = len(jobs) > 1
+    for job in jobs:
+        try:
+            if not dry_run:
+                logger.set_log_file(job.logs_dir / "assemble.log")
+            if job.source_changed() and not options.force:
+                raise ValidationError(
+                    f"Source changed since the job was created: {job.source_path}",
+                    hint="Use --force only if the existing upscaled frames still match the source.",
+                )
+
+            media = probe_media(config.ffprobe, job.source_path, logger)
+            upscaled_dir = (
+                Path(options.upscaled_dir).expanduser()
+                if options.upscaled_dir is not None
+                else job.upscaled_dir
+            )
+            if not upscaled_dir.is_dir():
+                raise ValidationError(
+                    f"No upscaled frames found: {upscaled_dir}",
+                    hint="Run Upscayl on the frames folder first, or pass --upscaled-dir.",
+                )
+            raw_frames = scan_frames(upscaled_dir, recursive=True)
+            if not any(
+                path.is_file() and path.stat().st_size > 0
+                for paths in raw_frames.values()
+                for path in paths
+            ):
+                raise ValidationError(
+                    f"No upscaled frames found: {upscaled_dir}",
+                    hint="Run Upscayl on the frames folder first, or pass --upscaled-dir.",
+                )
+
+            frame_set = validate_frame_set(
+                upscaled_dir,
+                expected=None,
+                pick=options.pick,
+                verify=options.verify_frames,
+            )
+            stored_count = job.get_int("frame_count")
+            if stored_count and frame_set.count != stored_count:
+                logger.warn(
+                    f"Upscaled frame count {frame_set.count} differs from job frame_count "
+                    f"{stored_count}; updating the job."
+                )
+                job.set("frame_count", frame_set.count)
+
+            normalized = frame_set if dry_run else build_sequence(frame_set, job, logger)
+            frame_width, frame_height = probe_first_frame_dimensions(
+                config.ffprobe,
+                normalized.paths[0],
+                logger,
+            )
+            expected_width, expected_height = output_dimensions(
+                frame_width,
+                frame_height,
+                options.target_height,
+                options.allow_huge,
+            )
+
+            audio_mode = options.audio or preset.default_audio
+            subs_mode = options.subs or preset.default_subs
+            audio_plan = plan_audio(
+                media,
+                preset,
+                audio_mode,
+                options.audio_bitrate,
+                options.all_audio,
+            )
+            subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
+            candidates = encoder_candidates(preset, options.encoder, config.ffmpeg)
+            output = _resolve_output_path(
+                job,
+                preset.extension,
+                options,
+                multiple_jobs=multiple,
+            )
+
+            if dry_run:
+                logger.info(f"Would assemble {job.job_id} -> {output}")
+                outputs.append(output)
+                continue
+
+            output.parent.mkdir(parents=True, exist_ok=True)
+            last_error: CommandError | None = None
+            for index, candidate in enumerate(candidates):
+                command = build_assemble_command(
+                    job,
+                    normalized,
+                    media,
+                    preset,
+                    candidate,
+                    audio_plan,
+                    subtitle_plan,
+                    options,
+                    output,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                )
+                command[0] = str(config.ffmpeg)
+                try:
+                    run_command(command, logger=logger)
+                    last_error = None
+                    break
+                except CommandError as exc:
+                    last_error = exc
+                    if options.encoder == "auto" and index < len(candidates) - 1:
+                        logger.warn(
+                            f"Encoder {candidate.video_codec} failed; trying the next encoder."
+                        )
+                        continue
+                    raise EncodeError(
+                        f"Encoding failed for: {job.source_path}",
+                        hint=exc.stderr_tail or str(exc),
+                    ) from exc
+
+            if last_error is not None:
+                raise EncodeError(
+                    f"Encoding failed for: {job.source_path}",
+                    hint=last_error.stderr_tail or str(last_error),
+                ) from last_error
+
+            validate_output(
+                config.ffprobe,
+                output,
+                job,
+                media,
+                options,
+                expected_width,
+                expected_height,
+                audio_plan.enabled,
+                len(subtitle_plan.streams),
+                logger,
+            )
+            job.set("upscaled_count", frame_set.count)
+            job.set("last_error", "")
+            job.save()
+            job.mark_done("assemble")
+            if options.cleanup:
+                _cleanup_intermediates(job)
+            outputs.append(output)
+        except PipelineError as exc:
+            job.set("last_error", str(exc)[:500])
+            try:
+                job.save()
+            except OSError:
+                pass
+            raise
+    return outputs
