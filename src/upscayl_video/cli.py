@@ -81,6 +81,25 @@ def build_parser() -> argparse.ArgumentParser:
     split.add_argument("--verify-frames", action="store_true")
     split.add_argument("--recursive", action="store_true")
 
+    model_test = subparsers.add_parser(
+        "model-test",
+        help="Compare every Upscayl model on a few sampled frames",
+        parents=[parent],
+    )
+    model_test.add_argument("video", help="Source video")
+    model_test.add_argument("--frames", type=int, default=3)
+    model_test.add_argument("--seed", type=int, default=None)
+    model_test.add_argument("--scale", type=int, choices=(2, 3, 4), default=None)
+    model_test.add_argument("--model", dest="models", action="append", default=[])
+    model_test.add_argument("--models-dir", default=None)
+    model_test.add_argument("--tile", default=None)
+    model_test.add_argument("--gpu", type=int, default=None)
+    model_test.add_argument("--icd", default=None)
+    model_test.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="cpu")
+    model_test.add_argument("--tonemap", dest="tonemap", action="store_true", default=None)
+    model_test.add_argument("--no-tonemap", dest="tonemap", action="store_false")
+    model_test.add_argument("--open", dest="open_report", action="store_true")
+
     assemble = subparsers.add_parser(
         "assemble",
         help="Reassemble upscaled frames into a video",
@@ -244,6 +263,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             overrides=overrides,
             tool_dir=Path(__file__).resolve().parents[2],
         )
+        if args.command == "model-test":
+            from .model_test import ModelTestOptions, run_model_test
+
+            return run_model_test(
+                Path(args.video),
+                config,
+                ModelTestOptions(
+                    frames=args.frames,
+                    seed=args.seed,
+                    scale=args.scale,
+                    models=tuple(args.models or ()),
+                    models_dir=Path(args.models_dir) if args.models_dir else None,
+                    tile=args.tile,
+                    gpu=args.gpu,
+                    icd=args.icd,
+                    decode=args.decode,
+                    tonemap=args.tonemap,
+                    open_report=args.open_report,
+                    dry_run=bool(getattr(args, "dry_run", False)),
+                    assume_yes=bool(getattr(args, "yes", False)),
+                ),
+                logger,
+            )
         if args.command == "split":
             options = SplitOptions(
                 fps=args.fps,

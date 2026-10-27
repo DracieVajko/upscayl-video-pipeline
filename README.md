@@ -55,6 +55,8 @@ for the original root.
 - `--dry-run` prints the plan and creates no job or frames.
 - Manual batch upscaling in the Upscayl GUI, with a menu picker for standard
   and custom models.
+- `model-test`: samples frames from a clip, upscales them with every model, and
+  writes an HTML comparison report.
 - Automated `upscayl-bin` upscaling in bounded, resumable batches, with
   model/ICD/tile discovery and VRAM-based batch sizing.
 - All-in-one `run`: split → upscale → assemble, one or many videos, with an ETA
@@ -74,6 +76,7 @@ for the original root.
   ends up empty.
 - **V2 parity:** the same commands, flags, contract, presets, audio/subtitle
   rules, exit codes, chunking, resume, doctor, and menu in PowerShell and bash.
+  `model-test` is V1-only for now; the V2 port is a follow-up.
 
 V2 bash has been exercised on Git Bash for Windows and with syntax checks for
 bash 3.2, but not on native Linux/macOS. Details in

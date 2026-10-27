@@ -9,7 +9,7 @@ Upscayl 2.15.0 with `upscayl-lite-4x` unless stated otherwise.
 
 ```
 python -m unittest discover -s tests -q
-Ran 184 tests
+Ran 192 tests
 OK
 ```
 
@@ -75,6 +75,17 @@ because the GPU was shared with other applications; the V2 9-frame run passed
 on the same code path. The bash real-Upscayl run needed an explicit `--icd`
 because the AMD Vulkan driver breaks device enumeration, as documented in
 `TROUBLESHOOTING.md`.
+
+## Model test (2026-10-27)
+
+`model-test` on `Test3_SecurityCamera_Dog` with `--frames 3 --seed 42`:
+
+- 3 frames at 00:01.024, 00:01.875, and 00:03.885;
+- 11 models, 33 upscaled frames at scale 2;
+- `report.html` with the original and every model, plus a `test.txt` manifest;
+- exit `0`.
+
+A smaller 2-model × 2-frame run produced the same layout and report.
 
 ## V1: full split and full assemble (no upscale)
 

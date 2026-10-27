@@ -148,6 +148,23 @@ VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
 the AMD `vkEnumeratePhysicalDevices failed 5` error. If the projected time
 exceeds one hour, the command asks for confirmation; `--yes` skips the prompt.
 
+### `model-test`
+
+```bash
+upscayl-video model-test <video> [--frames 3] [--seed N] \
+  [--scale 2|3|4] [--model NAME ...] [--models-dir DIR] \
+  [--tile auto|N] [--gpu N] [--icd auto|none|PATH] \
+  [--decode cpu|gpu|auto] [--tonemap|--no-tonemap] \
+  [--open] [--dry-run] [--yes]
+```
+
+Samples `--frames` frames spread across the clip, upscales each one with every
+discovered model, and writes an HTML report to
+`work/_model_tests/<video>/<timestamp>/report.html`. `--seed` reproduces the
+frame choice. `--model` limits the run to named models. The test folder is not
+a job; `status` and `clean` ignore it. This command is V1-only for now; the V2
+port is a follow-up.
+
 ### `run`
 
 ```bash

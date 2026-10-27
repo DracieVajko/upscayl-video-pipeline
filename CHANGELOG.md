@@ -19,6 +19,9 @@ All notable changes to this project will be documented here.
 - `cleanup=1` in `config.txt` is honoured by `run`.
 - `output_dir` in `config.txt` and `--output-dir` choose where finished videos
   are published.
+- `model-test` samples frames from a clip, upscales them with every discovered
+  model, and writes `work/_model_tests/<video>/<timestamp>/report.html` with
+  `--seed`, `--frames`, `--model`, and `--open`. V1 only for now.
 - `--cleanup` moves the final video to `output_dir` and removes the whole
   `work/<job>` folder, so `work/` is empty after a successful run.
 - Upscayl runs projected over one hour ask for confirmation; `--yes` skips it.
@@ -40,7 +43,7 @@ All notable changes to this project will be documented here.
 
 ### Validated
 
-- 184 V1 tests, 71 PowerShell tests, 72 bash unit tests, and 85 bash tests
+- 192 V1 tests, 71 PowerShell tests, 72 bash unit tests, and 85 bash tests
   with `RUN_V2_INTEGRATION=1` pass.
 - Real `4xHFA2k` custom model on 9 frames, 640×480 output.
 - `uhufe`: 16 HLG videos split with `--tonemap --decode auto` into 16 jobs,
