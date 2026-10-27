@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented here.
 
-## [Unreleased]
+## [0.3.1] — 2026-10-27
 
 ### Added
 
@@ -49,11 +49,16 @@ All notable changes to this project will be documented here.
 
 ### Validated
 
-- 192 V1 tests, 71 PowerShell tests, 72 bash unit tests, and 85 bash tests
+- 198 V1 tests, 71 PowerShell tests, 72 bash unit tests, and 85 bash tests
   with `RUN_V2_INTEGRATION=1` pass.
 - Real `4xHFA2k` custom model on 9 frames, 640×480 output.
 - `uhufe`: 16 HLG videos split with `--tonemap --decode auto` into 16 jobs,
   16,931 frames, 29.43 GB.
+
+### Not yet
+
+- V2 PowerShell/bash ports of `split-all`, `finish`, and `model-test`.
+- Native Linux/macOS execution of the bash implementation.
 
 ## [0.3.0-v2] — 2026-10-27
 

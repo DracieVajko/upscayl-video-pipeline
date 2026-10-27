@@ -4,7 +4,7 @@
 # No Python, Node, or jq.
 
 # No `set -u`: bash 3.2 fails on empty array expansions under nounset.
-UVP_VERSION="0.3.0"
+UVP_VERSION="0.3.1"
 UVP_PROGRAM="upscayl-video"
 UVP_TOOL_DIR=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd -P)
 UVP_LOG_FILE=""

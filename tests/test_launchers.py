@@ -16,7 +16,7 @@ class TestLaunchers(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("0.1.0", result.stdout)
+        self.assertIn("0.3.1", result.stdout)
 
     @unittest.skipUnless(sys.platform.startswith("win"), "Windows batch test")
     def test_batch_exit_codes(self):

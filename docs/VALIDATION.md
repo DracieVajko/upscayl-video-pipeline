@@ -9,7 +9,7 @@ Upscayl 2.15.0 with `upscayl-lite-4x` unless stated otherwise.
 
 ```
 python -m unittest discover -s tests -q
-Ran 192 tests
+Ran 198 tests
 OK
 ```
 

@@ -160,8 +160,8 @@ upscayl-video split-all [--format png|jpg] [--png-compression N] \
 Scans `input_dir` (default `input` next to `config.txt`), splits every video
 into `work/<job>/batch00001/in`, extracts every audio track to
 `work/<job>/audio`, creates `batch00001/out`, and writes `work/manifest.csv`
-plus `work/README-UPScayl.txt`. HDR is tonemapped by default. The point the
-Upscayl GUI at `batch00001/in` and `batch00001/out`.
+plus `work/README-UPScayl.txt`. HDR is tonemapped by default. Point the
+Upscayl GUI at `batch00001/in` and `batch00001/out`. V1 only for now.
 
 ### `finish`
 
@@ -176,7 +176,7 @@ upscayl-video finish [--all] [--job NAME ...] \
 Assembles jobs from `work/`, moves each video to `output_dir`, and removes the
 whole job folder. Without `--all` or `--job`, it lists jobs and asks. `--keep`
 keeps the work folder. `--ffmpeg-args` appends extra FFmpeg flags; structural
-flags (`-i`, `-map`, filters, `-y`, `-f`) are rejected.
+flags (`-i`, `-map`, filters, `-y`, `-f`) are rejected. V1 only for now.
 
 ### `model-test`
 
