@@ -2189,6 +2189,9 @@ function Build-AssembleCommand {
         }
         $arguments += @('-t', $durationValue.ToString('0.000000', [Globalization.CultureInfo]::InvariantCulture))
     }
+    if ($Options.ffmpeg_args -and $Options.ffmpeg_args.Count -gt 0) {
+        $arguments += $Options.ffmpeg_args
+    }
     $arguments += $Output
     return $arguments
 }
@@ -4166,7 +4169,7 @@ function Invoke-Finish {
             audio = $Options.audio; audio_bitrate = $Options.audio_bitrate; all_audio = $Options.all_audio;
             subs = $Options.subs; ten_bit = $Options.ten_bit; target_height = $null;
             cleanup = (-not $Options.keep); output = $null; upscaled_dir = $null; pick = 'error';
-            verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
+            verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false; ffmpeg_args = @()
         }
         try {
             Write-Info ('Assembling ' + [IO.Path]::GetFileName($job.path) + ' (' + $count + ' frames)')
@@ -4688,7 +4691,7 @@ function Invoke-Menu {
                     subs = $(if ($subs -eq 'auto') { $null } else { $subs });
                     ten_bit = $false; target_height = $null; cleanup = $cleanup;
                     output = $null; upscaled_dir = $null; pick = 'error';
-                    verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
+                    verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false; ffmpeg_args = @()
                 }
                 $null = Invoke-RunAll -Inputs $inputs -Config $Config -Options @{
                     split = $split; upscale = $upscale; encode = $encode;
@@ -4758,7 +4761,7 @@ function Invoke-Menu {
                     all_audio = $false; subs = $(if ($subs -eq 'auto') { $null } else { $subs });
                     ten_bit = $false; target_height = $null; cleanup = $false;
                     output = $null; upscaled_dir = $null; pick = 'error';
-                    verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
+                    verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false; ffmpeg_args = @()
                 }
                 $null = Invoke-Assemble -Jobs $jobs -Config $Config -Options $options -Logger $Logger
             } elseif ($choice -eq '5') {
@@ -4881,6 +4884,14 @@ function Get-CommandOptionsSpec {
             & $add 'scale' 'value' $null @(2, 3, 4) $true
             & $add 'model' 'value'
         }
+        'model-test' {
+            & $add 'video' 'value'
+            & $add 'frames' 'value' $null $null $true
+            & $add 'seed' 'value' $null $null $true
+            & $add 'scale' 'value' $null @(2, 3, 4) $true
+            & $add 'models-dir' 'value'
+            & $add 'open' 'flag'
+        }
         'finish' {
             & $add 'all' 'flag'
             & $add 'job' 'value'
@@ -4895,6 +4906,7 @@ function Get-CommandOptionsSpec {
             & $add 'subs' 'value' $null @('auto', 'copy', 'convert', 'none')
             & $add '10bit' 'flag' 'ten_bit'
             & $add 'keep' 'flag'
+            & $add 'ffmpeg-args' 'value' $null $null $false
         }
         'assemble' {
             & $add 'all' 'flag'
@@ -5100,7 +5112,7 @@ function Invoke-Main {
         break
     }
 
-    $validCommands = @('doctor', 'split', 'split-all', 'upscale', 'assemble', 'finish', 'run', 'status', 'clean')
+    $validCommands = @('doctor', 'split', 'split-all', 'upscale', 'assemble', 'finish', 'run', 'status', 'clean', 'model-test')
     if (-not $command) {
         if ($Argv.Count -eq 0) {
             if ([Console]::IsInputRedirected) {
@@ -5236,8 +5248,24 @@ function Invoke-Main {
             subs = (Get-OptionValue $opts 'subs' $null)
             ten_bit = $opts.ContainsKey('ten_bit')
             keep = $opts.ContainsKey('keep')
+            ffmpeg_args = if ($opts.ContainsKey('ffmpeg_args')) { @($opts['ffmpeg_args']) } else { @() }
         }
         return (Invoke-Finish -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun)
+    }
+
+    if ($command -eq 'model-test') {
+        $videoArg = if ($opts.ContainsKey('video')) { $opts['video'] } else { $null }
+        if (-not $videoArg) { throw [PipelineException]::new('--video is required for model-test.', $null, 2) }
+        $scriptDir = [IO.Path]::GetDirectoryName($script:ProgramPath)
+        $modelTestScript = Join-Path $scriptDir 'model-test.ps1'
+        if (-not (Test-Path $modelTestScript)) { $modelTestScript = Join-Path $scriptDir '..\windows\model-test.ps1' }
+        $arguments = @('-File', $modelTestScript, '-VideoPath', $videoArg)
+        if ($opts.ContainsKey('frames')) { $arguments += @('-Frames', $opts['frames']) }
+        if ($opts.ContainsKey('seed')) { $arguments += @('-Seed', $opts['seed']) }
+        if ($opts.ContainsKey('scale')) { $arguments += @('-Scale', $opts['scale']) }
+        if ($opts.ContainsKey('models-dir')) { $arguments += @('-ConfigDir', (Join-Path (Split-Path $videoArg) '..')) }
+        $proc = Start-Process -FilePath 'powershell' -ArgumentList $arguments -NoNewWindow -Wait -PassThru
+        return $proc.ExitCode
     }
 
     if ($command -eq 'assemble') {

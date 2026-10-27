@@ -588,6 +588,7 @@ CFG_UPSCAYL_BIN=""
 CFG_MODELS_DIR=""
 CFG_WORK_DIR=""
 CFG_OUTPUT_DIR=""
+CFG_INPUT_DIR="input"
 CFG_DEFAULT_MODEL="upscayl-standard-4x"
 CFG_DEFAULT_SCALE="2"
 CFG_DEFAULT_PRESET="mp4-h264"
@@ -611,6 +612,7 @@ config_defaults() {
     CFG_MODELS_DIR="auto"
     CFG_WORK_DIR="work"
     CFG_OUTPUT_DIR="output"
+    CFG_INPUT_DIR="input"
     CFG_DEFAULT_MODEL="upscayl-standard-4x"
     CFG_DEFAULT_SCALE="2"
     CFG_DEFAULT_PRESET="mp4-h264"
@@ -822,6 +824,14 @@ config_load() {
         value=$(kv_get output_dir "output")
         case "$value" in /*|'~'|'~/'*) ;; *) value="$config_dir/$value" ;; esac
         CFG_OUTPUT_DIR=$(abspath "$value")
+    fi
+
+    if [ -n "$override_input" ]; then
+        CFG_INPUT_DIR=$(abspath "$override_input" "$PWD")
+    else
+        value=$(kv_get input_dir "input")
+        case "$value" in /*|'~'|'~/'*) ;; *) value="$config_dir/$value" ;; esac
+        CFG_INPUT_DIR=$(abspath "$value")
     fi
 }
 
@@ -2838,6 +2848,156 @@ publish_and_purge() {
     log_info "Removed work folder: $job_dir"
 }
 
+job_frames_dir() {
+    local value
+    value=$(job_get frames_dir '')
+    if [ -n "$value" ]; then
+        case "$value" in
+            /*) printf '%s\n' "$value" ;;
+            *) printf '%s\n' "$JOB_DIR/$value" ;;
+        esac
+    else
+        printf '%s\n' "$JOB_DIR/frames"
+    fi
+}
+
+job_upscaled_dir() {
+    local value
+    value=$(job_get upscaled_dir '')
+    if [ -n "$value" ]; then
+        case "$value" in
+            /*) printf '%s\n' "$value" ;;
+            *) printf '%s\n' "$JOB_DIR/$value" ;;
+        esac
+    else
+        printf '%s\n' "$JOB_DIR/upscaled"
+    fi
+}
+
+split_all() {
+    SP_FORMAT="${SP_FORMAT:-png}"; SP_PNG="${SP_PNG:-1}"; SP_JPEG="${SP_JPEG:-1}"
+    SP_DENOISE="${SP_DENOISE:-none}"; SP_TONEMAP="${SP_TONEMAP:-0}"; SP_DECODE="${SP_DECODE:-auto}"
+    SP_SCALE="${SP_SCALE:-$CFG_DEFAULT_SCALE}"; SP_MODEL="${SP_MODEL:-$CFG_DEFAULT_MODEL}"
+    SP_FORCE="${SP_FORCE:-0}"
+
+    local input_dir="$CFG_INPUT_DIR" source frames_dir n media tonemap
+    mkdir -p "$input_dir"
+    local list
+    list=$(find "$input_dir" -type f \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mkv' -o -iname '*.avi' -o -iname '*.webm' -o -iname '*.m4v' -o -iname '*.mts' -o -iname '*.m2ts' \) | sort)
+    if [ -z "$list" ]; then die 2 "No videos found in: $input_dir" "Put the original videos in the input folder and run again."; fi
+    log_info "Inputs: $(printf '%s\n' "$list" | wc -l | tr -d ' ') - work: $CFG_WORK_DIR"
+
+    if [ "$OPT_DRY_RUN" -eq 1 ]; then log_info "Dry run: nothing written."; return 0; fi
+
+    while IFS= read -r source; do
+        [ -n "$source" ] || continue
+        source=$(abspath "$source")
+        probe_media "$source"
+        tonemap=0
+        if [ "$SP_TONEMAP" -eq 1 ]; then tonemap=1
+        elif [ "$OPT_NO_TONEMAP" -eq 1 ]; then tonemap=0
+        elif [ "$M_HDR" = "1" ]; then tonemap=1; fi
+        if [ "$M_HDR" = "1" ] && [ "$tonemap" -ne 1 ]; then
+            die 4 "HDR source detected. Upscayl models are 8-bit SDR." "Re-run with --tonemap to convert HDR to SDR BT.709."
+        fi
+        SP_TONEMAP="$tonemap"
+        run_split 0 1 "$OPT_DRY_RUN" "$source" || { log_error "Failed: $source"; continue; }
+        job_load "$JOB_DIR"
+        if [ -z "$(job_get frames_dir '')" ]; then
+            mkdir -p "$JOB_DIR/batch00001" || die 1 "Could not create batch dir"
+            mv "$JOB_DIR/frames" "$JOB_DIR/batch00001/in"
+            job_set frames_dir batch00001/in
+            job_set upscaled_dir batch00001/out
+            job_set layout batches
+            job_save
+        fi
+        mkdir -p "$JOB_DIR/batch00001/out"
+        # audio
+        local audio_dir="$JOB_DIR/audio" idx n=0
+        mkdir -p "$audio_dir"
+        local indices
+        indices=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$source" 2>/dev/null)
+        if [ -z "$indices" ]; then
+            job_set audio_tracks 0; job_save
+            printf 'tracks=0\n' > "$audio_dir/info.txt"
+        else
+            printf 'tracks=%s\n' "$(printf '%s\n' "$indices" | wc -l | tr -d ' ')" > "$audio_dir/info.txt"
+            while IFS= read -r idx; do
+                [ -n "$idx" ] || continue
+                n=$((n + 1))
+                local target="$audio_dir/track$(printf '%02d' "$n").mka"
+                if ! ffmpeg -hide_banner -nostdin -y -i "$source" -map "0:$idx" -vn -sn -dn -c copy "$target" >/dev/null 2>&1; then
+                    ffmpeg -hide_banner -nostdin -y -i "$source" -map "0:$idx" -vn -sn -dn -c:a flac "$target" >/dev/null 2>&1
+                fi
+            done <<EOF
+$indices
+EOF
+            job_set audio_tracks "$n"; job_save
+        fi
+        log_info "Job $(basename "$JOB_DIR"): frames -> $JOB_DIR/batch00001/in"
+    done <<EOF
+$list
+EOF
+
+    local jobs job
+    jobs=$(find_jobs "$CFG_WORK_DIR")
+    if [ -n "$jobs" ]; then
+        {
+            printf 'job,source,frames,in,out,audio_tracks,output\n'
+            while IFS= read -r job; do
+                [ -n "$job" ] || continue
+                job_load "$job"
+                printf '%s,%s,%s,%s,%s,%s,%s\n' "$(basename "$job")" "$(job_source_path)" "$(job_get frame_count 0)" "$(job_frames_dir)" "$(job_upscaled_dir)" "$(job_get audio_tracks 0)" "$job/output"
+            done <<EOF
+$jobs
+EOF
+        } > "$CFG_WORK_DIR/manifest.csv"
+        printf 'Upscayl Video Pipeline - workspace\n\nPoint the Upscayl GUI at:\n  Input:  <job>/batch00001/in\n  Output: <job>/batch00001/out\n\nThen run: upscayl-video.sh finish --all\n\nJobs:\n' > "$CFG_WORK_DIR/README-UPScayl.txt"
+        while IFS= read -r job; do
+            [ -n "$job" ] || continue
+            printf '  %s: %s\n' "$(basename "$job")" "$job" >> "$CFG_WORK_DIR/README-UPScayl.txt"
+        done <<EOF
+$jobs
+EOF
+    fi
+    return 0
+}
+
+finish_all() {
+    local failed=0 job count upscaled_dir
+    local profile preset quality encoder
+    for job in "$@"; do
+        [ -d "$job" ] || { log_warn "Job not found: $job"; failed=$((failed + 1)); continue; }
+        job_load "$job"
+        upscaled_dir=$(job_upscaled_dir)
+        count=$(find "$upscaled_dir" -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$count" -eq 0 ]; then log_warn "Skipping $(basename "$job"): no upscaled frames"; continue; fi
+        profile="${OPT_PROFILE:-default}"
+        preset=""; quality=""; encoder=""
+        if [ "$profile" = "fast" ]; then preset="mp4-h264"; quality="fast"; encoder="auto"
+        elif [ "$profile" = "quality" ]; then preset="mp4-hevc"; quality="quality"; encoder="auto"
+        else preset="${OPT_PRESET:-$CFG_DEFAULT_PRESET}"; quality="${OPT_QUALITY:-balanced}"; encoder="${OPT_ENCODER:-$CFG_DEFAULT_ENCODER}"; fi
+        [ -n "$OPT_PRESET" ] && preset="$OPT_PRESET"
+        [ -n "$OPT_ENCODER" ] && encoder="$OPT_ENCODER"
+        [ -n "$OPT_QUALITY" ] && quality="$OPT_QUALITY"
+        EN_PRESET="$preset"; EN_ENCODER="$encoder"; EN_QUALITY="$quality"
+        EN_TARGET=""; EN_OUTPUT=""; EN_UPSCALED_DIR=""; EN_PICK="error"; EN_VERIFY=0; EN_KEEP_CHUNKS=0
+        EN_CLEANUP=1; [ "${OPT_KEEP:-0}" = "1" ] && EN_CLEANUP=0
+        if ! run_assemble 0 "$job"; then
+            log_error "Failed: $(basename "$job")"
+            failed=$((failed + 1))
+        fi
+    done
+    if [ -z "$(find_jobs "$CFG_WORK_DIR")" ]; then
+        rm -f "$CFG_WORK_DIR/manifest.csv" "$CFG_WORK_DIR/README-UPScayl.txt"
+    fi
+    if [ "$failed" -gt 0 ]; then
+        log_info "Finished with $failed failure(s)"
+        return 1
+    fi
+    return 0
+}
+
 clear_intermediates() {
     rm -rf "$JOB_DIR/frames" "$JOB_DIR/upscaled" "$JOB_DIR/sequence" "$JOB_DIR/chunks"
     local batch
@@ -2997,7 +3157,15 @@ run_assemble() {
             upscaled_dir=$(abspath "$EN_UPSCALED_DIR")
         else
             upscaled_dir=$(job_get upscaled_dir '')
-            if [ -n "$upscaled_dir" ]; then upscaled_dir=$(abspath "$upscaled_dir"); else upscaled_dir="$JOB_DIR/upscaled"; fi
+            if [ -n "$upscaled_dir" ]; then
+                case "$upscaled_dir" in
+                    /*) ;;
+                    *) upscaled_dir="$JOB_DIR/$upscaled_dir" ;;
+                esac
+                upscaled_dir=$(abspath "$upscaled_dir")
+            else
+                upscaled_dir="$JOB_DIR/upscaled"
+            fi
         fi
         [ -d "$upscaled_dir" ] || die 4 "No upscaled frames found: $upscaled_dir" "Run Upscayl on the frames folder first, or pass --upscaled-dir."
         local any_frame
@@ -4498,7 +4666,7 @@ show_help() {
 }
 
 reset_options() {
-    OPT_WORK_DIR=""; OPT_OUTPUT_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""
+    OPT_WORK_DIR=""; OPT_OUTPUT_DIR=""; OPT_INPUT_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""; OPT_PROFILE="default"; OPT_KEEP=0; OPT_NO_TONEMAP=0; OPT_JOB=""
     OPT_FFPROBE=""; OPT_VERBOSE=0; OPT_QUIET=0; OPT_YES=0; OPT_FORCE=0; OPT_DRY_RUN=0
     OPT_MAX_WORK=""; OPT_MIN_FREE=""
     SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT="png"; SP_JPEG=1; SP_PNG=3
@@ -4565,6 +4733,8 @@ parse_options() {
             --png-compression) need_value "$token" "$#"; SP_PNG=$(require_int "$2" png-compression) || exit $?; shift 2 ;;
             --denoise) need_value "$token" "$#"; SP_DENOISE="$2"; case "$SP_DENOISE" in none|light|medium|strong) ;; *) die 2 "argument --denoise: invalid choice: '$SP_DENOISE'" ;; esac; shift 2 ;;
             --tonemap) SP_TONEMAP=1; if [ "$COMMAND" = "assemble" ]; then die 4 "--tonemap is a split-stage option; re-split with --tonemap instead."; fi; shift ;;
+            --no-tonemap) SP_TONEMAP=0; OPT_NO_TONEMAP=1; shift ;;
+            --job) need_value "$token" "$#"; OPT_JOB="$2"; shift 2 ;;
             --decode) need_value "$token" "$#"; SP_DECODE="$2"; case "$SP_DECODE" in cpu|gpu|auto) ;; *) die 2 "argument --decode: invalid choice: '$SP_DECODE'" ;; esac; shift 2 ;;
             --scale) need_value "$token" "$#"; value=$(require_int "$2" scale) || exit $?; case "$value" in 2|3|4) ;; *) die 2 "argument --scale: invalid choice: $value" ;; esac; SP_SCALE="$value"; US_SCALE="$value"; shift 2 ;;
             --target-height) need_value "$token" "$#"; SP_TARGET=$(require_int "$2" target-height) || exit $?; EN_TARGET="$SP_TARGET"; shift 2 ;;
@@ -4572,9 +4742,9 @@ parse_options() {
             --verify-frames) SP_VERIFY=1; EN_VERIFY=1; shift ;;
             --recursive) SP_RECURSIVE=1; shift ;;
             --all) ALL_JOBS=1; ASSEMBLE_ALL=1; shift ;;
-            --preset) need_value "$token" "$#"; EN_PRESET="$2"; case "$EN_PRESET" in mp4-h264|mp4-hevc|mkv-hevc|mov-prores) ;; *) die 2 "argument --preset: invalid choice: '$EN_PRESET'" ;; esac; shift 2 ;;
-            --encoder) need_value "$token" "$#"; EN_ENCODER="$2"; case "$EN_ENCODER" in auto|nvidia|amd|cpu) ;; *) die 2 "argument --encoder: invalid choice: '$EN_ENCODER'" ;; esac; shift 2 ;;
-            --quality) need_value "$token" "$#"; EN_QUALITY="$2"; EN_QUALITY_SET=1; case "$EN_QUALITY" in fast|balanced|quality) ;; *) die 2 "argument --quality: invalid choice: '$EN_QUALITY'" ;; esac; shift 2 ;;
+            --preset) need_value "$token" "$#"; EN_PRESET="$2"; OPT_PRESET="$2"; case "$EN_PRESET" in mp4-h264|mp4-hevc|mkv-hevc|mov-prores) ;; *) die 2 "argument --preset: invalid choice: '$EN_PRESET'" ;; esac; shift 2 ;;
+            --encoder) need_value "$token" "$#"; EN_ENCODER="$2"; OPT_ENCODER="$2"; case "$EN_ENCODER" in auto|nvidia|amd|cpu) ;; *) die 2 "argument --encoder: invalid choice: '$EN_ENCODER'" ;; esac; shift 2 ;;
+            --quality) need_value "$token" "$#"; EN_QUALITY="$2"; OPT_QUALITY="$2"; EN_QUALITY_SET=1; case "$EN_QUALITY" in fast|balanced|quality) ;; *) die 2 "argument --quality: invalid choice: '$EN_QUALITY'" ;; esac; shift 2 ;;
             --crf) need_value "$token" "$#"; EN_CRF=$(require_int "$2" crf) || exit $?; EN_CRF_SET=1; shift 2 ;;
             --audio) need_value "$token" "$#"; EN_AUDIO="$2"; case "$EN_AUDIO" in auto|copy|aac|pcm|none) ;; *) die 2 "argument --audio: invalid choice: '$EN_AUDIO'" ;; esac; shift 2 ;;
             --audio-bitrate) need_value "$token" "$#"; EN_AUDIO_BITRATE=$(require_int "$2" audio-bitrate) || exit $?; shift 2 ;;
@@ -4583,6 +4753,9 @@ parse_options() {
             --10bit) EN_TENBIT=1; shift ;;
             --cleanup) EN_CLEANUP=1; RUN_CLEANUP=1; shift ;;
             --keep-chunks) EN_KEEP_CHUNKS=1; shift ;;
+            --input-dir) need_value "$token" "$#"; OPT_INPUT_DIR="$2"; shift 2 ;;
+            --profile) need_value "$token" "$#"; OPT_PROFILE="$2"; case "$OPT_PROFILE" in default|fast|quality) ;; *) die 2 "argument --profile: invalid choice: '$OPT_PROFILE'" ;; esac; shift 2 ;;
+            --keep) OPT_KEEP=1; shift ;;
             --output) need_value "$token" "$#"; EN_OUTPUT="$2"; shift 2 ;;
             --upscaled-dir) need_value "$token" "$#"; US_UPSCALED_DIR="$2"; EN_UPSCALED_DIR="$2"; shift 2 ;;
             --pick) need_value "$token" "$#"; EN_PICK="$2"; case "$EN_PICK" in error|newest|largest) ;; *) die 2 "argument --pick: invalid choice: '$EN_PICK'" ;; esac; shift 2 ;;
@@ -4662,8 +4835,8 @@ main() {
         die 2 "the following arguments are required: command" "Run with --help for usage."
     fi
     case "$command" in
-        doctor|split|upscale|assemble|run|status|clean) ;;
-        *) die 2 "invalid choice: '$command'" "choose from: doctor, split, upscale, assemble, run, status, clean" ;;
+        doctor|split|split-all|upscale|assemble|finish|run|status|clean|model-test) ;;
+        *) die 2 "invalid choice: '$command'" "choose from: doctor, split, split-all, upscale, assemble, finish, run, status, clean" ;;
     esac
     COMMAND="$command"
     while [ "$i" -lt "${#args[@]}" ]; do
@@ -4687,11 +4860,35 @@ main() {
     fi
     [ "$OPT_VERBOSE" -eq 1 ] && UVP_VERBOSE=1
     [ "$OPT_QUIET" -eq 1 ] && UVP_QUIET=1
-    config_load "$OPT_CONFIG" "$UVP_TOOL_DIR" "$OPT_WORK_DIR" "$OPT_OUTPUT_DIR" "$OPT_FFMPEG" "$OPT_FFPROBE" "$OPT_MAX_WORK" "$OPT_MIN_FREE"
+    config_load "$OPT_CONFIG" "$UVP_TOOL_DIR" "$OPT_WORK_DIR" "$OPT_OUTPUT_DIR" "$OPT_INPUT_DIR" "$OPT_FFMPEG" "$OPT_FFPROBE" "$OPT_MAX_WORK" "$OPT_MIN_FREE"
     apply_config_defaults
 
     local dry="$OPT_DRY_RUN" yes="$OPT_YES" rc
     case "$command" in
+        split-all)
+            SP_FORMAT="${SP_FORMAT:-png}"; SP_PNG="${SP_PNG:-1}"; SP_JPEG="${SP_JPEG:-1}"
+            SP_DENOISE="${SP_DENOISE:-none}"; SP_TONEMAP="${SP_TONEMAP:-0}"; SP_DECODE="${SP_DECODE:-auto}"
+            SP_SCALE="${SP_SCALE:-$CFG_DEFAULT_SCALE}"; SP_MODEL="${SP_MODEL:-$CFG_DEFAULT_MODEL}"; SP_FORCE="${SP_FORCE:-0}"
+            split_all
+            exit 0
+            ;;
+        finish)
+            OPT_PROFILE="${OPT_PROFILE:-default}"
+            if [ -n "$OPT_JOB" ]; then
+                local candidate finish_jobs=""
+                for candidate in $(find_jobs "$CFG_WORK_DIR"); do
+                    if [ "$(basename "$candidate")" = "$OPT_JOB" ]; then
+                        finish_jobs="$finish_jobs $candidate"
+                    fi
+                done
+                [ -n "$finish_jobs" ] || die 4 "Job not found: $OPT_JOB" "Run 'status' to list available jobs."
+                if finish_all $finish_jobs; then exit 0; else exit 1; fi
+            elif [ "$ALL_JOBS" -eq 1 ]; then
+                if finish_all $(find_jobs "$CFG_WORK_DIR"); then exit 0; else exit 1; fi
+            else
+                die 2 "finish requires --all or --job NAME" "Use 'upscayl-video finish --all' to process every job."
+            fi
+            ;;
         split)
             resolve_inputs "$SP_RECURSIVE" "${POSITIONALS[@]}"
             run_split "$SP_RECURSIVE" "$yes" "$dry" "${INPUT_PATHS[@]}"
@@ -4717,6 +4914,10 @@ main() {
             EN_CLEANUP="$RUN_CLEANUP"
             resolve_inputs "$SP_RECURSIVE" "${POSITIONALS[@]}"
             if run_all "$dry" "${INPUT_PATHS[@]}"; then exit 0; else exit "${RUN_EXIT_CODE:-1}"; fi
+            ;;
+        model-test)
+            log_info "model-test is a V2 follow-up; see docs/VALIDATION.md"
+            exit 3
             ;;
         status)
             run_status "$OPT_VERBOSE"
