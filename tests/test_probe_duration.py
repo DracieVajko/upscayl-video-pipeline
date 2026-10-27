@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import subprocess
 import tempfile
@@ -52,4 +52,3 @@ class TestMatroskaDuration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 <#
 .SYNOPSIS
     Upscayl Video Pipeline V2 - native Windows implementation.
@@ -339,15 +339,6 @@ function Get-FreeBytes {
         $root = [IO.Path]::GetPathRoot($full)
         $drive = New-Object System.IO.DriveInfo($root)
         return [int64]$drive.AvailableFreeSpace
-    } catch {
-        return [int64]0
-    }
-}
-
-function Get-FileMtime {
-    param([string]$Path)
-    try {
-        return [int64]([DateTimeOffset](Get-Item -LiteralPath $Path).LastWriteTimeUtc).ToUnixTimeSeconds()
     } catch {
         return [int64]0
     }

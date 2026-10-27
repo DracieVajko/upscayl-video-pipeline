@@ -56,7 +56,7 @@ function Invoke-Process {
     return $output
 }
 
-function Invoke-V1 { param([string[]]$Arguments) Invoke-Process $python.Source (@('upscayl-video.py') + $Arguments) 'V1' }
+function Invoke-V1 { param([string[]]$Arguments) Invoke-Process $python.Source (@($script:V1) + $Arguments) 'V1' }
 function Invoke-V2 { param([string[]]$Arguments) Invoke-Process 'powershell.exe' (@('-NoProfile','-ExecutionPolicy','Bypass','-File',$script:V2) + $Arguments) 'V2' }
 
 function Get-MediaInfo {

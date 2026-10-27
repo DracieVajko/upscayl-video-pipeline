@@ -63,7 +63,3 @@ class EncodeError(PipelineError):
 
 class OutputValidationError(PipelineError):
     exit_code = 8
-
-
-class PipelineInterrupted(PipelineError):
-    exit_code = 130

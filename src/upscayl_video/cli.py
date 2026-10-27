@@ -11,7 +11,7 @@ from . import __version__
 from .config import load_config
 from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
-from .errors import PipelineError, UsageError, ValidationError
+from .errors import PipelineError, ValidationError
 from .menu import run_menu
 from .pipeline import (
     RunOptions,

@@ -6,13 +6,11 @@ from unittest.mock import patch
 
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions
-from upscayl_video.errors import DiskSpaceError
 from upscayl_video.pipeline import (
     RunOptions,
     SplitOptions,
     UpscaleOptions,
     run_all,
-    run_split,
 )
 from upscayl_video.util import Logger
 from tests.util import find_ffmpeg, find_ffprobe, make_clip

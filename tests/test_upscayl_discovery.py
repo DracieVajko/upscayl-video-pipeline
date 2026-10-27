@@ -6,8 +6,6 @@ from unittest.mock import patch
 from upscayl_video.config import load_config
 from upscayl_video.errors import DependencyError, ValidationError
 from upscayl_video.upscayl import (
-    ModelInfo,
-    UpscaylPaths,
     discover_upscayl,
     find_nvidia_icd,
     list_models,

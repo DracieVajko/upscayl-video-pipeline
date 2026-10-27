@@ -84,11 +84,6 @@ log_warn() {
     fi
 }
 
-log_error() {
-    log_file_line "ERROR" "$1"
-    printf '%s\n' "$1" >&2
-}
-
 log_debug() {
     log_file_line "DEBUG" "$1"
     if [ "$UVP_VERBOSE" -eq 1 ]; then
@@ -195,22 +190,6 @@ child_tail() {
     } | sed '/^$/d'
 }
 
-# Run a command and fail with exit code 1 when it returns nonzero.
-run_checked() {
-    log_debug "\$ $(display_command "$@")"
-    run_child "$@"
-    local rc=$?
-    if [ "$rc" -ne 0 ]; then
-        local detail
-        detail=$(child_tail 50)
-        local message="Command failed with exit code $rc: $(display_command "$@")"
-        [ -n "$detail" ] && message="$message
-$detail"
-        cleanup_temp_files
-        die 1 "$message"
-    fi
-}
-
 # Run a command, capture stdout in RUN_STDOUT, fail when nonzero.
 run_capture() {
     log_debug "\$ $(display_command "$@")"
@@ -242,10 +221,6 @@ trim() {
 
 lower() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
-}
-
-supports_color() {
-    [ -t 1 ] && [ "$UVP_QUIET" -eq 0 ]
 }
 
 expand_home() {
@@ -392,15 +367,6 @@ kv_load() {
     done < "$file"
 }
 
-kv_has() {
-    local key="$1" i=0
-    while [ "$i" -lt "${#KV_KEYS[@]}" ]; do
-        if [ "${KV_KEYS[$i]}" = "$key" ]; then return 0; fi
-        i=$((i + 1))
-    done
-    return 1
-}
-
 kv_get() {
     local key="$1" default="${2:-}" i=0
     while [ "$i" -lt "${#KV_KEYS[@]}" ]; do
@@ -443,11 +409,6 @@ write_text_atomic() {
     temporary="$file.tmp.$$"
     printf '%s' "$text" > "$temporary" || die 1 "Could not write $temporary"
     mv -f "$temporary" "$file" || die 1 "Could not replace $file"
-}
-
-write_stdout_atomic() {
-    local file="$1" text="$2"
-    write_text_atomic "$file" "$text"
 }
 
 # ---------------------------------------------------------------------------
@@ -615,13 +576,6 @@ sanitize_job_id() {
             ;;
     esac
     printf '%s' "$value"
-}
-
-is_leap_year() {
-    local y="$1"
-    if [ $((y % 400)) -eq 0 ]; then return 0; fi
-    if [ $((y % 100)) -eq 0 ]; then return 1; fi
-    [ $((y % 4)) -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1114,11 +1068,6 @@ job_load() {
     fi
 }
 
-job_sync_kv() {
-    KV_KEYS=("${JOB_KEYS[@]}")
-    KV_VALUES=("${JOB_VALUES[@]}")
-}
-
 job_get() {
     local key="$1" default="${2:-}" i=0
     while [ "$i" -lt "${#JOB_KEYS[@]}" ]; do
@@ -1400,19 +1349,6 @@ frame_signature_ok() {
     return 1
 }
 
-frame_extension() {
-    local base ext
-    base=${1##*/}
-    ext=${base##*.}
-    case "$ext" in
-        [Pp][Nn][Gg]) printf 'png' ;;
-        [Jj][Pp][Gg]) printf 'jpg' ;;
-        [Jj][Pp][Ee][Gg]) printf 'jpeg' ;;
-        [Ww][Ee][Bb][Pp]) printf 'webp' ;;
-        *) printf '' ;;
-    esac
-}
-
 validate_frame_set() {
     local dir="$1" expected="${2:-}" pick="${3:-error}" verify="${4:-0}"
     local tmp idx path prev paths count selected max missing extra details ext current i
@@ -1544,18 +1480,6 @@ array_contains() {
     shift
     for item in "$@"; do
         [ "$item" = "$needle" ] && return 0
-    done
-    return 1
-}
-
-frame_path_for_index() {
-    local idx="$1" i=0
-    while [ "$i" -lt "${#FS_INDICES[@]}" ]; do
-        if [ "${FS_INDICES[$i]}" = "$idx" ]; then
-            printf '%s' "${FS_PATHS[$i]}"
-            return 0
-        fi
-        i=$((i + 1))
     done
     return 1
 }
@@ -3073,11 +2997,6 @@ model_exists() {
     return 1
 }
 
-find_nvidia_icd() {
-    # V1 only auto-detects the ICD on Windows; Unix leaves it unset.
-    printf ''
-}
-
 resolve_icd() {
     local value="$1"
     [ -n "$value" ] || value="$CFG_ICD"
@@ -3145,15 +3064,6 @@ missing_indices() {
     done <<EOF
 $result
 EOF
-}
-
-source_frame_for_index() {
-    local source_dir="$1" index="$2" map path
-    map=$(new_temp_file)
-    scan_frames "$source_dir" 0 > "$map"
-    path=$(awk -F'\t' -v i="$index" '$1 == i { print $2; exit }' "$map")
-    rm -f "$map"
-    [ -n "$path" ] && printf '%s' "$path"
 }
 
 UPSCALED_COUNT=0
@@ -4111,11 +4021,6 @@ EOF
     done <<EOF
 $sorted
 EOF
-}
-
-resolve_jobs_dedup() {
-    # Kept separate so resolve_jobs stays readable; collects validated paths.
-    :
 }
 
 show_help() {

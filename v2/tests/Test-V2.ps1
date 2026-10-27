@@ -36,7 +36,7 @@ function Assert-Match {
     }
 }
 
-$script:TestDir = Join-Path (Get-Location) 'v2\tests'
+$script:TestDir = $PSScriptRoot
 $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $script:TestDir)
 $script:Script = Join-Path $script:RepoRoot 'v2\windows\UpscaylVideo.ps1'
 

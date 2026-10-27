@@ -66,6 +66,20 @@ bash 3.2, but not on native Linux/macOS. Details in
 - Upscayl with `upscayl-bin` and models for `upscale`/`run`; split/assemble and
   the manual GUI workflow do not require the CLI.
 
+## Install
+
+There is no package to install; both versions run from the checkout.
+
+```bash
+git clone https://github.com/DracieVajko/upscayl-video-pipeline.git
+cd upscayl-video-pipeline
+cp config.example.txt config.txt   # optional; config.txt is gitignored
+```
+
+V1 needs Python 3.10+. V2 needs PowerShell 5.1+ (Windows) or bash 3.2+
+(Linux/macOS). Point `ffmpeg`, `ffprobe`, `upscayl_bin`, and `models_dir` at
+your installation in `config.txt`, or pass the corresponding flags.
+
 ## Quick start
 
 ```bash

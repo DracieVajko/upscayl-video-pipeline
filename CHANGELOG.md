@@ -1,10 +1,10 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented here.
 
-## [Unreleased]
+## [0.3.0-v2] — 2026-10-27
 
-### Added â€” V1 (Python reference)
+### Added — V1 (Python reference)
 
 - `doctor`, `split`, `assemble`, `upscale`, `run`, `status`, `clean`, and the
   full nine-option interactive menu.
@@ -23,7 +23,7 @@ All notable changes to this project will be documented here.
 - Output validation with ffprobe and BT.709 color-tag normalization.
 - Windows `.bat` and Unix `.sh` launchers, usage and troubleshooting docs.
 
-### Added â€” V2 (no Python/Node/jq)
+### Added — V2 (no Python/Node/jq)
 
 - Windows: `v2/windows/UpscaylVideo.ps1` (PowerShell 5.1+) and
   `UpscaylVideo.bat`.
@@ -73,13 +73,13 @@ All notable changes to this project will be documented here.
 - V1: all three local example clips fully split and fully assembled (225, 556,
   2,495 frames; 7.53 s, 18.53 s, 83.15 s), real Upscayl on 1 s windows, a real
   18.5 s chunked run, and a full 83.15 s chunked run
-  (2,495 frames, 2944Ã—3904, 83.116689 s, AAC 83.105 s, BT.709).
+  (2,495 frames, 2944×3904, 83.116689 s, AAC 83.105 s, BT.709).
 - V2 PowerShell: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and 12 s
   chunked jobs; all presets, target height, 10-bit HEVC, odd dimensions, JPEG,
   trim, resume, and GUI-suffixed names.
 - V2 bash on Git Bash: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and
   12 s chunked jobs; split/assemble variants and resume.
-- V1 â†” V2 PowerShell cross-version matrix passes on MP4, MKV+MP3+SRT+chapters,
+- V1 ↔ V2 PowerShell cross-version matrix passes on MP4, MKV+MP3+SRT+chapters,
   and odd-dimension FFV1.
 - `doctor` green in V1 and both V2 implementations.
 

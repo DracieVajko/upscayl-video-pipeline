@@ -1,11 +1,48 @@
+# Runtime and generated work
 work/
 input/
 output/
-TEST_EXAMPLE_VIDEOS/
-*.log
 batch_*/
+TEST_EXAMPLE_VIDEOS/
+
+# Local configuration and secrets
+config.txt
+config.local.txt
+.env
+.env.*
+secrets.*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Python caches and build output
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 .venv/
-*.pyc
+venv/
+
+# Agent/planning scratch
 .superpowers/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
