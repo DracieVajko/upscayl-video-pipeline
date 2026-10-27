@@ -160,13 +160,15 @@ def resolve_inputs(
     for raw in args:
         text = str(raw)
         path = Path(text).expanduser()
-        if any(char in text for char in "*?[]"):
-            matches = glob.glob(text, recursive=recursive)
-            candidates = [Path(match) for match in matches]
+        # An existing literal file/folder wins over glob interpretation so
+        # names containing [ ] or ? are not silently skipped.
+        if path.is_file():
+            candidates = [path]
         elif path.is_dir():
             candidates = list(path.rglob("*") if recursive else path.iterdir())
-        elif path.is_file():
-            candidates = [path]
+        elif any(char in text for char in "*?[]"):
+            matches = glob.glob(text, recursive=recursive)
+            candidates = [Path(match) for match in matches]
         else:
             candidates = []
         for candidate in candidates:
@@ -753,6 +755,14 @@ def _run_chunked(
                 options.encode.allow_huge,
             )
             segment_error: Exception | None = None
+            segment_options = dataclasses.replace(
+                options.encode,
+                target_height=(
+                    options.encode.target_height
+                    or job.get_int("target_height")
+                    or None
+                ),
+            )
             for candidate in candidates:
                 command = build_segment_command(
                     job,
@@ -760,7 +770,7 @@ def _run_chunked(
                     media,
                     preset,
                     candidate,
-                    options.encode,
+                    segment_options,
                     segment,
                     frame_width=frame_width,
                     frame_height=frame_height,
@@ -857,6 +867,16 @@ def run_all(
     options: RunOptions,
     logger: Logger,
 ) -> list[RunResult]:
+    if len(inputs) > 1 and options.encode.output is not None:
+        requested = Path(options.encode.output).expanduser()
+        if not requested.is_absolute():
+            requested = (Path.cwd() / requested).resolve()
+        treat_as_directory = requested.is_dir() or requested.suffix == ""
+        if not treat_as_directory:
+            raise UsageError(
+                "With multiple inputs, --output must be a directory.",
+                hint="Pass a directory (or omit --output).",
+            )
     results: list[RunResult] = []
     for input_path in inputs:
         chunk_value = str(options.chunk_seconds).strip().lower()

@@ -21,7 +21,7 @@ def run(args: list[str]) -> None:
 
 
 class TestColorNormalization(unittest.TestCase):
-    """The color-tag remux must not drop audio, subtitles, or data streams."""
+    """The color-tag remux must not drop audio, subtitles, or attachments."""
 
     def setUp(self) -> None:
         ffmpeg = find_ffmpeg()

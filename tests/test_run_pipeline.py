@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions
+from upscayl_video.errors import UsageError
 from upscayl_video.pipeline import (
     RunOptions,
     SplitOptions,
@@ -72,6 +73,33 @@ class TestRun(unittest.TestCase):
             results = run_all([self.a, self.b], cfg, options, Logger(quiet=True))
         self.assertEqual(len(results), 2)
         self.assertTrue(all(result.output and result.output.exists() for result in results))
+
+    def test_run_rejects_file_output_for_multiple_inputs(self):
+        cfg = load_config(None, overrides={
+            "ffmpeg": self.ffmpeg,
+            "ffprobe": self.ffprobe,
+            "work_dir": str(self.root / "work-multi"),
+            "upscayl_bin": str(self.binary),
+            "models_dir": str(self.models),
+        })
+        options = RunOptions(
+            split=SplitOptions(
+                fps=None, start=None, end=None, format="png", jpeg_quality=1,
+                png_compression=3, denoise="none", tonemap=False, decode="cpu",
+                scale=2, target_height=None, model="m", verify_frames=False,
+                recursive=False, force=False,
+            ),
+            upscale=UpscaleOptions(model="m", scale=2, tile="128", batch_size=2),
+            encode=EncodeOptions(
+                encoder="cpu", preset="mp4-h264", audio="copy",
+                output=Path("one.mp4"),
+            ),
+            cleanup=False,
+            stop_on_error=False,
+            chunk_seconds="0",
+        )
+        with self.assertRaises(UsageError):
+            run_all([self.a, self.b], cfg, options, Logger(quiet=True))
 
 
 if __name__ == "__main__":

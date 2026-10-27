@@ -1,10 +1,10 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented here.
 
 ## [Unreleased]
 
-### Added — V1 (Python reference)
+### Added â€” V1 (Python reference)
 
 - `doctor`, `split`, `assemble`, `upscale`, `run`, `status`, `clean`, and the
   full nine-option interactive menu.
@@ -23,7 +23,7 @@ All notable changes to this project will be documented here.
 - Output validation with ffprobe and BT.709 color-tag normalization.
 - Windows `.bat` and Unix `.sh` launchers, usage and troubleshooting docs.
 
-### Added — V2 (no Python/Node/jq)
+### Added â€” V2 (no Python/Node/jq)
 
 - Windows: `v2/windows/UpscaylVideo.ps1` (PowerShell 5.1+) and
   `UpscaylVideo.bat`.
@@ -51,26 +51,35 @@ All notable changes to this project will be documented here.
   HD, BT.601 for SD) instead of passing invalid encoder options.
 - Convert `mov_text` subtitles to `subrip` in MKV instead of failing.
 - Reject partial upscaled frame sets before encoding; never shrink `frame_count`.
+- Build chunk segments with the job's stored `target_height`, not only the
+  value repeated on the command line.
+- Reject `--output FILE` with multiple `run` inputs instead of overwriting the
+  first result.
 - Re-splitting the same job without `--end` no longer reports a false settings
   difference.
 - Resolve config-relative paths against the config directory and CLI-relative
   paths against the current directory.
+- Treat an existing literal file/folder as a literal input before glob
+  expansion, so names containing `[`, `]`, or `?` are not skipped.
+- Bash: 25 fps and other non-30 sources, `--opt=value` parsing, chunked
+  source state, `last_error`, `--stop-on-error` exit codes, empty arrays on
+  bash 3.2, temp-file cleanup, and Git Bash path conversion.
 - Use config `default_audio`/`default_subs`, delete transient `sequence/`, and
   return Windows `.bat` exit codes.
 
 ### Validated
 
-- 174 V1 tests, 68 V2 PowerShell tests, and 63 V2 bash tests pass.
+- 176 V1 tests, 71 V2 PowerShell tests, and 82 V2 bash tests pass.
 - V1: all three local example clips fully split and fully assembled (225, 556,
   2,495 frames; 7.53 s, 18.53 s, 83.15 s), real Upscayl on 1 s windows, a real
   18.5 s chunked run, and a full 83.15 s chunked run
-  (2,495 frames, 2944×3904, 83.116689 s, AAC 83.105 s, BT.709).
+  (2,495 frames, 2944Ã—3904, 83.116689 s, AAC 83.105 s, BT.709).
 - V2 PowerShell: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and 12 s
   chunked jobs; all presets, target height, 10-bit HEVC, odd dimensions, JPEG,
   trim, resume, and GUI-suffixed names.
 - V2 bash on Git Bash: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and
   12 s chunked jobs; split/assemble variants and resume.
-- V1 ↔ V2 PowerShell cross-version matrix passes on MP4, MKV+MP3+SRT+chapters,
+- V1 â†” V2 PowerShell cross-version matrix passes on MP4, MKV+MP3+SRT+chapters,
   and odd-dimension FFV1.
 - `doctor` green in V1 and both V2 implementations.
 
@@ -88,3 +97,5 @@ All notable changes to this project will be documented here.
 ## Design
 
 - Initial design specification and V1 core implementation plan.
+
+

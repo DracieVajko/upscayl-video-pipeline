@@ -3,15 +3,23 @@
 # Requires bash 3.2+, FFmpeg/ffprobe, and Upscayl's CLI.
 # No Python, Node, or jq.
 
-set -u
-
+# No `set -u`: bash 3.2 fails on empty array expansions under nounset.
 UVP_VERSION="0.3.0"
 UVP_PROGRAM="upscayl-video"
 UVP_TOOL_DIR=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd -P)
 UVP_LOG_FILE=""
 UVP_VERBOSE=0
 UVP_QUIET=0
-UVP_TMP_FILES=""
+HAS_CYGPATH=0
+if command -v cygpath >/dev/null 2>&1; then HAS_CYGPATH=1; fi
+# Create the scratch directory before any command substitution. A lazy
+# creation inside $(...) would run the EXIT trap in the subshell and delete the
+# file before the caller can use it.
+UVP_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/uvp.XXXXXX") || {
+    printf 'Could not create a temporary directory\n' >&2
+    exit 1
+}
+trap 'rm -rf "$UVP_TMP_DIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Errors and logging
@@ -28,6 +36,12 @@ die() {
     fi
     if [ -n "${UVP_ERROR_FILE:-}" ]; then
         printf '%s' "$message" > "$UVP_ERROR_FILE" 2>/dev/null || true
+    fi
+    if [ -n "${JOB_DIR:-}" ] && [ -f "$JOB_DIR/job.txt" ] && [ "${UVP_IN_DIE:-0}" != "1" ]; then
+        UVP_IN_DIE=1
+        job_set last_error "$message"
+        job_save || true
+        UVP_IN_DIE=0
     fi
     if [ -n "${PARTIAL_PATH:-}" ] && [ -e "$PARTIAL_PATH" ]; then
         rm -f "$PARTIAL_PATH" 2>/dev/null || true
@@ -90,18 +104,26 @@ set_log_file() {
 }
 
 new_temp_file() {
-    local file
-    file=$(mktemp "${TMPDIR:-/tmp}/uvp.XXXXXX") || die 1 "Could not create a temporary file"
-    UVP_TMP_FILES="$UVP_TMP_FILES $file"
-    printf '%s' "$file"
+    mktemp "$UVP_TMP_DIR/file.XXXXXX"
 }
 
 cleanup_temp_files() {
-    local file
-    for file in $UVP_TMP_FILES; do
-        [ -e "$file" ] && rm -f "$file" 2>/dev/null
-    done
-    UVP_TMP_FILES=""
+    [ -n "$LAST_OUT" ] && rm -f "$LAST_OUT" 2>/dev/null
+    [ -n "$LAST_ERR" ] && rm -f "$LAST_ERR" 2>/dev/null
+    LAST_OUT=""
+    LAST_ERR=""
+}
+
+native_arg() {
+    if [ "$HAS_CYGPATH" -eq 1 ]; then
+        case "$1" in
+            /*)
+                cygpath -m "$1"
+                return 0
+                ;;
+        esac
+    fi
+    printf '%s' "$1"
 }
 
 quote_for_display() {
@@ -130,21 +152,26 @@ CHILD_ICD=""
 run_child() {
     LAST_OUT=$(new_temp_file)
     LAST_ERR=$(new_temp_file)
-    local rc icd_value="$CHILD_ICD"
-    if [ -n "$icd_value" ] && command -v cygpath >/dev/null 2>&1; then
+    local rc icd_value="$CHILD_ICD" arg
+    if [ -n "$icd_value" ] && [ "$HAS_CYGPATH" -eq 1 ]; then
         icd_value=$(cygpath -w "$icd_value")
     fi
+    local converted
+    converted=()
+    for arg in "$@"; do
+        converted[${#converted[@]}]="$(native_arg "$arg")"
+    done
     if [ -n "$CHILD_CWD" ]; then
         if [ -n "$icd_value" ]; then
-            ( cd "$CHILD_CWD" && VK_ICD_FILENAMES="$icd_value" "$@" ) > "$LAST_OUT" 2> "$LAST_ERR"
+            ( cd "$CHILD_CWD" && VK_ICD_FILENAMES="$icd_value" "${converted[@]}" ) > "$LAST_OUT" 2> "$LAST_ERR"
         else
-            ( cd "$CHILD_CWD" && "$@" ) > "$LAST_OUT" 2> "$LAST_ERR"
+            ( cd "$CHILD_CWD" && "${converted[@]}" ) > "$LAST_OUT" 2> "$LAST_ERR"
         fi
     else
         if [ -n "$icd_value" ]; then
-            VK_ICD_FILENAMES="$icd_value" "$@" > "$LAST_OUT" 2> "$LAST_ERR"
+            VK_ICD_FILENAMES="$icd_value" "${converted[@]}" > "$LAST_OUT" 2> "$LAST_ERR"
         else
-            "$@" > "$LAST_OUT" 2> "$LAST_ERR"
+            "${converted[@]}" > "$LAST_OUT" 2> "$LAST_ERR"
         fi
     fi
     rc=$?
@@ -251,7 +278,18 @@ normalize_absolute() {
 
 abspath() {
     local path base
-    path=$(expand_home "$1")
+    case "$1" in
+        [A-Za-z]:[\\/]*)
+            if [ "$HAS_CYGPATH" -eq 1 ]; then
+                path=$(cygpath -u "$1")
+            else
+                path="$1"
+            fi
+            ;;
+        *)
+            path=$(expand_home "$1")
+            ;;
+    esac
     base="${2:-$PWD}"
     case "$path" in
         /*) ;;
@@ -491,7 +529,7 @@ parse_time_value() {
     for value in "$@"; do
         [ -n "$value" ] || die 4 "Invalid time value: $1"
         case "$value" in
-            *[!0-9.]*|.*|*.) die 4 "Invalid time value: $1" ;;
+            *[!0-9.]*|*.*.*|.*|*.) die 4 "Invalid time value: $1" ;;
         esac
         if [ "$index" -gt 0 ]; then
             num_cmp "$value" ge 60 && die 4 "Minutes and seconds must be below 60: $1"
@@ -539,7 +577,7 @@ fps_override() {
             ;;
         *)
             case "$text" in
-                *[!0-9.]*|.*|*.) die 4 "Invalid --fps value: $1" ;;
+                *[!0-9.]*|*.*.*|.*|*.) die 4 "Invalid --fps value: $1" ;;
             esac
             den=1
             num=$text
@@ -687,7 +725,9 @@ resolve_executable() {
 require_int() {
     local value="$1" key="$2"
     case "$value" in
-        ''|*[!0-9-]*) die 4 "Invalid integer for $key: '$value'" ;;
+        ''|-) die 4 "Invalid integer for $key: '$value'" ;;
+        -*) case "${value#-}" in ''|*[!0-9]*) die 4 "Invalid integer for $key: '$value'" ;; esac ;;
+        *[!0-9]*) die 4 "Invalid integer for $key: '$value'" ;;
     esac
     printf '%s' "$value"
 }
@@ -853,13 +893,14 @@ SUB_INDEX=()
 SUB_CODEC=()
 
 probe_media() {
-    local source="$1" fields line key value
+    local source="$1" fields line key value source_arg
     M_SOURCE=$(abspath "$source")
+    if [ "$HAS_CYGPATH" -eq 1 ]; then source_arg=$(cygpath -m "$M_SOURCE"); else source_arg="$M_SOURCE"; fi
     [ -f "$M_SOURCE" ] || die 4 "Source not found: $source"
 
     fields=$("$CFG_FFPROBE" -v error -select_streams v:0 -count_packets \
         -show_entries stream=index,width,height,pix_fmt,avg_frame_rate,r_frame_rate,duration,color_primaries,color_transfer,color_space,color_range,nb_read_packets,sample_aspect_ratio \
-        -of default=nw=1 "$M_SOURCE" 2>/dev/null) || die 4 "ffprobe failed for: $source"
+        -of default=nw=1 "$source_arg" 2>/dev/null) || die 4 "ffprobe failed for: $source"
 
     M_WIDTH=""; M_HEIGHT=""; M_PIX_FMT="unknown"; M_VIDEO_INDEX="0"
     M_DURATION=""; M_FPS_AVG=""; M_FPS_REAL=""; M_NB_FRAMES=""
@@ -895,6 +936,11 @@ EOF
     [ "$M_WIDTH" -gt 0 ] && [ "$M_HEIGHT" -gt 0 ] || die 4 "Invalid video dimensions in: $source"
 
     normalize_fps "${M_FPS_AVG:-}" "${M_FPS_REAL:-}"
+    M_FPS_NUM="$FPS_NUM"
+    M_FPS_DEN="$FPS_DEN"
+    M_FPS_RATIONAL="$FPS_RATIONAL"
+    M_FPS_DECIMAL="$FPS_DECIMAL"
+    M_FPS_TEXT="$FPS_TEXT"
 
     case "$M_NB_FRAMES" in
         ''|*[!0-9]*) M_NB_FRAMES="" ;;
@@ -908,7 +954,7 @@ EOF
     fi
     if [ -z "$M_DURATION" ]; then
         local format_duration
-        format_duration=$("$CFG_FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$M_SOURCE" 2>/dev/null | head -n 1)
+        format_duration=$("$CFG_FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$source_arg" 2>/dev/null | head -n 1)
         case "$format_duration" in ''|*[!0-9.]*) format_duration="" ;; esac
         if [ -n "$format_duration" ]; then
             M_DURATION="$format_duration"
@@ -916,14 +962,14 @@ EOF
     fi
     if [ -z "$M_DURATION" ] && [ -z "$M_NB_FRAMES" ]; then
         local tail_end
-        tail_end=$(probe_last_video_end "$M_SOURCE" "")
+        tail_end=$(probe_last_video_end "$source_arg" "")
         [ -n "$tail_end" ] && M_DURATION="$tail_end"
     fi
     [ -n "$M_DURATION" ] || M_DURATION="0"
 
     AUDIO_INDEX=(); AUDIO_CODEC=(); AUDIO_CHANNELS=()
     local audio_lines
-    audio_lines=$("$CFG_FFPROBE" -v error -select_streams a -show_entries stream=index,codec_name,channels -of csv=p=0 "$M_SOURCE" 2>/dev/null || true)
+    audio_lines=$("$CFG_FFPROBE" -v error -select_streams a -show_entries stream=index,codec_name,channels -of csv=p=0 "$source_arg" 2>/dev/null || true)
     if [ -n "$audio_lines" ]; then
         local ai ac ach
         while IFS=, read -r ai ac ach; do
@@ -938,7 +984,7 @@ EOF
 
     SUB_INDEX=(); SUB_CODEC=()
     local sub_lines
-    sub_lines=$("$CFG_FFPROBE" -v error -select_streams s -show_entries stream=index,codec_name -of csv=p=0 "$M_SOURCE" 2>/dev/null || true)
+    sub_lines=$("$CFG_FFPROBE" -v error -select_streams s -show_entries stream=index,codec_name -of csv=p=0 "$source_arg" 2>/dev/null || true)
     if [ -n "$sub_lines" ]; then
         local si sc
         while IFS=, read -r si sc; do
@@ -950,13 +996,13 @@ $sub_lines
 EOF
     fi
 
-    M_CHAPTERS=$("$CFG_FFPROBE" -v error -show_chapters -show_entries chapter=start_time -of csv=p=0 "$M_SOURCE" 2>/dev/null | grep -c . || true)
+    M_CHAPTERS=$("$CFG_FFPROBE" -v error -show_chapters -show_entries chapter=start_time -of csv=p=0 "$source_arg" 2>/dev/null | grep -c . || true)
     [ -n "$M_CHAPTERS" ] || M_CHAPTERS=0
 
     local rotation
-    rotation=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=side_data_list -of json "$M_SOURCE" 2>/dev/null | tr -d ' \n' | sed -n 's/.*"rotation":\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -n 1)
+    rotation=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=side_data_list -of json "$source_arg" 2>/dev/null | tr -d ' \n' | sed -n 's/.*"rotation":\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -n 1)
     if [ -z "$rotation" ]; then
-        rotation=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream_tags=rotate -of default=nw=1:nk=1 "$M_SOURCE" 2>/dev/null | head -n 1)
+        rotation=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream_tags=rotate -of default=nw=1:nk=1 "$source_arg" 2>/dev/null | head -n 1)
         case "$rotation" in ''|*[!0-9-]*) rotation=0 ;; esac
     fi
     rotation=$(( (rotation % 360 + 360) % 360 ))
@@ -971,15 +1017,58 @@ EOF
     M_SOURCE_MTIME=$(file_mtime "$M_SOURCE")
 }
 
+S_M_SOURCE=""; S_M_DURATION=""; S_M_WIDTH=""; S_M_HEIGHT=""; S_M_PIX_FMT=""
+S_M_VIDEO_INDEX=""; S_M_FPS_NUM=""; S_M_FPS_DEN=""; S_M_FPS_RATIONAL=""
+S_M_FPS_DECIMAL=""; S_M_FPS_TEXT=""; S_M_CHAPTERS=""; S_M_COLOR_PRIMARIES=""
+S_M_COLOR_TRC=""; S_M_COLOR_SPACE=""; S_M_COLOR_RANGE=""; S_M_ROTATION=""
+S_M_HDR=""; S_M_SOURCE_SIZE=""; S_M_SOURCE_MTIME=""; S_M_NB_FRAMES=""; S_M_SAR=""
+S_AUDIO_INDEX=(); S_AUDIO_CODEC=(); S_AUDIO_CHANNELS=()
+S_SUB_INDEX=(); S_SUB_CODEC=()
+
+save_media_state() {
+    S_M_SOURCE="$M_SOURCE"; S_M_DURATION="$M_DURATION"
+    S_M_WIDTH="$M_WIDTH"; S_M_HEIGHT="$M_HEIGHT"; S_M_PIX_FMT="$M_PIX_FMT"
+    S_M_VIDEO_INDEX="$M_VIDEO_INDEX"
+    S_M_FPS_NUM="$M_FPS_NUM"; S_M_FPS_DEN="$M_FPS_DEN"
+    S_M_FPS_RATIONAL="$M_FPS_RATIONAL"; S_M_FPS_DECIMAL="$M_FPS_DECIMAL"; S_M_FPS_TEXT="$M_FPS_TEXT"
+    S_M_CHAPTERS="$M_CHAPTERS"
+    S_M_COLOR_PRIMARIES="$M_COLOR_PRIMARIES"; S_M_COLOR_TRC="$M_COLOR_TRC"
+    S_M_COLOR_SPACE="$M_COLOR_SPACE"; S_M_COLOR_RANGE="$M_COLOR_RANGE"
+    S_M_ROTATION="$M_ROTATION"; S_M_HDR="$M_HDR"
+    S_M_SOURCE_SIZE="$M_SOURCE_SIZE"; S_M_SOURCE_MTIME="$M_SOURCE_MTIME"
+    S_M_NB_FRAMES="$M_NB_FRAMES"; S_M_SAR="$M_SAR"
+    S_AUDIO_INDEX=("${AUDIO_INDEX[@]}"); S_AUDIO_CODEC=("${AUDIO_CODEC[@]}")
+    S_AUDIO_CHANNELS=("${AUDIO_CHANNELS[@]}")
+    S_SUB_INDEX=("${SUB_INDEX[@]}"); S_SUB_CODEC=("${SUB_CODEC[@]}")
+}
+
+restore_media_state() {
+    M_SOURCE="$S_M_SOURCE"; M_DURATION="$S_M_DURATION"
+    M_WIDTH="$S_M_WIDTH"; M_HEIGHT="$S_M_HEIGHT"; M_PIX_FMT="$S_M_PIX_FMT"
+    M_VIDEO_INDEX="$S_M_VIDEO_INDEX"
+    M_FPS_NUM="$S_M_FPS_NUM"; M_FPS_DEN="$S_M_FPS_DEN"
+    M_FPS_RATIONAL="$S_M_FPS_RATIONAL"; M_FPS_DECIMAL="$S_M_FPS_DECIMAL"; M_FPS_TEXT="$S_M_FPS_TEXT"
+    M_CHAPTERS="$S_M_CHAPTERS"
+    M_COLOR_PRIMARIES="$S_M_COLOR_PRIMARIES"; M_COLOR_TRC="$S_M_COLOR_TRC"
+    M_COLOR_SPACE="$S_M_COLOR_SPACE"; M_COLOR_RANGE="$S_M_COLOR_RANGE"
+    M_ROTATION="$S_M_ROTATION"; M_HDR="$S_M_HDR"
+    M_SOURCE_SIZE="$S_M_SOURCE_SIZE"; M_SOURCE_MTIME="$S_M_SOURCE_MTIME"
+    M_NB_FRAMES="$S_M_NB_FRAMES"; M_SAR="$S_M_SAR"
+    AUDIO_INDEX=("${S_AUDIO_INDEX[@]}"); AUDIO_CODEC=("${S_AUDIO_CODEC[@]}")
+    AUDIO_CHANNELS=("${S_AUDIO_CHANNELS[@]}")
+    SUB_INDEX=("${S_SUB_INDEX[@]}"); SUB_CODEC=("${S_SUB_CODEC[@]}")
+}
+
 probe_last_video_end() {
-    local source="$1" format_duration="$2" start output max
+    local source="$1" format_duration="$2" start output max native_source="$1"
+    if [ "$HAS_CYGPATH" -eq 1 ]; then native_source=$(cygpath -m "$source"); fi
     case "$format_duration" in
-        ''|0|*[!0-9.]*) format_duration=$("$CFG_FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$source" 2>/dev/null | head -n 1) ;;
+        ''|0|*[!0-9.]*) format_duration=$("$CFG_FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$native_source" 2>/dev/null | head -n 1) ;;
     esac
     case "$format_duration" in ''|*[!0-9.]*) return 1 ;; esac
     start=$(fcalc "$format_duration" '-' 2 '%.3f')
     if num_cmp "$start" lt 0; then start=0; fi
-    output=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries packet=pts_time,duration_time -of csv=p=0 -read_intervals "${start}%+2.0" "$source" 2>/dev/null || true)
+    output=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries packet=pts_time,duration_time -of csv=p=0 -read_intervals "${start}%+2.0" "$native_source" 2>/dev/null || true)
     [ -n "$output" ] || return 1
     max=$(printf '%s\n' "$output" | awk -F, '
         NF >= 1 && $1 != "" && $1 != "N/A" {
@@ -995,8 +1084,9 @@ probe_last_video_end() {
 }
 
 probe_frame_dimensions() {
-    local path="$1" value
-    value=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$path" 2>/dev/null | head -n 1)
+    local path="$1" value probe_path="$1"
+    if [ "$HAS_CYGPATH" -eq 1 ]; then probe_path=$(cygpath -m "$path"); fi
+    value=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$probe_path" 2>/dev/null | head -n 1)
     case "$value" in
         *,*) printf '%s' "$value" ;;
         *) die 4 "Could not read frame dimensions: $path" ;;
@@ -1612,29 +1702,28 @@ resolve_inputs() {
     for raw in "${items[@]}"; do
         path=$(expand_home "$raw")
         candidates=$(new_temp_file)
-        case "$path" in
-            *'*'*|*'?'*|*'['*)
-                dir=$(dirname "$path")
-                pattern=$(basename "$path")
-                [ -d "$dir" ] || dir="."
-                if [ "$recursive" -eq 1 ]; then
-                    find "$dir" -maxdepth 2 -type f -name "$pattern" 2>/dev/null > "$candidates"
-                else
-                    find "$dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null > "$candidates"
-                fi
-                ;;
-            *)
-                if [ -d "$path" ]; then
+        if [ -f "$path" ]; then
+            printf '%s\n' "$path" > "$candidates"
+        elif [ -d "$path" ]; then
+            if [ "$recursive" -eq 1 ]; then
+                find "$path" -maxdepth 2 -type f 2>/dev/null > "$candidates"
+            else
+                find "$path" -maxdepth 1 -type f 2>/dev/null > "$candidates"
+            fi
+        else
+            case "$path" in
+                *'*'*|*'?'*|*'['*)
+                    dir=$(dirname "$path")
+                    pattern=$(basename "$path")
+                    [ -d "$dir" ] || dir="."
                     if [ "$recursive" -eq 1 ]; then
-                        find "$path" -maxdepth 2 -type f 2>/dev/null > "$candidates"
+                        find "$dir" -maxdepth 2 -type f -name "$pattern" 2>/dev/null > "$candidates"
                     else
-                        find "$path" -maxdepth 1 -type f 2>/dev/null > "$candidates"
+                        find "$dir" -maxdepth 1 -type f -name "$pattern" 2>/dev/null > "$candidates"
                     fi
-                elif [ -f "$path" ]; then
-                    printf '%s\n' "$path" > "$candidates"
-                fi
-                ;;
-        esac
+                    ;;
+            esac
+        fi
         while IFS= read -r candidate; do
             [ -n "$candidate" ] || continue
             [ -f "$candidate" ] || continue
@@ -1964,6 +2053,7 @@ run_split() {
     JOB_PATHS=()
     local input source start end processed_duration expected_frames sample_bytes free scale target
     for input in "${inputs[@]}"; do
+        JOB_DIR=""
         source=$(abspath "$input")
         probe_media "$source"
         if num_cmp "$M_DURATION" le 0; then
@@ -2654,8 +2744,11 @@ repair_color_tags() {
 
 validate_output() {
     local output="$1" expected_w="$2" expected_h="$3" expected_audio="$4" expected_subs="$5"
-    local problems="" expected_duration tolerance expected_fps has_audio expected_pixfmt
-    probe_media "$output" || die 8 "Output is not a readable video: $output"
+    local problems="" expected_duration tolerance expected_fps has_audio expected_pixfmt probe_output="$output"
+    if [ "$HAS_CYGPATH" -eq 1 ]; then probe_output=$(cygpath -m "$output"); fi
+    "$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$probe_output" >/dev/null 2>&1 \
+        || die 8 "Output is not a readable video: $output"
+    probe_media "$output"
     if [ "$M_WIDTH" -ne "$expected_w" ] || [ "$M_HEIGHT" -ne "$expected_h" ]; then
         problems="$problems; dimensions ${M_WIDTH}x${M_HEIGHT}, expected ${expected_w}x${expected_h}"
     fi
@@ -2731,7 +2824,7 @@ test_output_path() {
         *.*) actual_suffix=".${path##*.}" ;;
     esac
     if [ "$(lower "$actual_suffix")" != "$expected_suffix" ]; then
-        die 4 "Output extension ${actual_suffix:-ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¹ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â noneÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¼ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°} does not match preset extension $expected_suffix"
+        die 4 "Output extension ${actual_suffix:-(none)} does not match preset extension $expected_suffix"
     fi
     printf '%s' "$path"
 }
@@ -3066,7 +3159,7 @@ source_frame_for_index() {
 UPSCALED_COUNT=0
 
 upscale_frames() {
-    local model="$1" scale="$2" output_dir="$3" tile="$4" batch_size="$5" gpu="$6" icd="$7" threads="$8" retry="$9" source_dir="${10:-}" total="${11:-}"
+    local model="$1" scale="$2" output_dir="$3" tile="$4" batch_size="$5" gpu="$6" icd="$7" threads="$8" retry="$9" source_dir="${10:-}" total="${11:-}" progress_total="${12:-}" progress_done="${13:-0}"
     [ -n "$source_dir" ] || source_dir="$JOB_DIR/frames"
     [ -n "$total" ] || total=$(job_get frame_count 0)
     [ "$total" -gt 0 ] || die 4 "Job has no frame_count: $(basename "$JOB_DIR")"
@@ -3160,13 +3253,15 @@ upscale_frames() {
         attempt=0
         local done_count elapsed rate eta percent
         # Progress is measured by the number of upscaled frames on disk.
-        done_count=$(find "$output_dir" -maxdepth 1 -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        local_done=$(find "$output_dir" -maxdepth 1 -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        done_count=$((progress_done + local_done))
+        if [ -n "$progress_total" ]; then display_total="$progress_total"; else display_total="$total"; fi
         elapsed=$(( $(date +%s) - progress_start ))
         [ "$elapsed" -gt 0 ] || elapsed=1
         rate=$(awk -v d="$done_count" -v e="$elapsed" 'BEGIN { printf "%.2f", d / e }')
-        eta=$(awk -v d="$done_count" -v t="$total" -v e="$elapsed" 'BEGIN { r = d / e; if (r <= 0) print 0; else printf "%.0f", (t - d) / r }')
-        percent=$(awk -v d="$done_count" -v t="$total" 'BEGIN { printf "%.1f", (t > 0) ? d / t * 100 : 100 }')
-        log_info "upscale: $done_count/$total (${percent}%) ${rate}/s ETA $(format_duration "$eta" | cut -d. -f1)"
+        eta=$(awk -v d="$done_count" -v t="$display_total" -v e="$elapsed" 'BEGIN { r = d / e; if (r <= 0) print 0; else printf "%.0f", (t - d) / r }')
+        percent=$(awk -v d="$done_count" -v t="$display_total" 'BEGIN { printf "%.1f", (t > 0) ? d / t * 100 : 100 }')
+        log_info "upscale: $done_count/$display_total (${percent}%) ${rate}/s ETA $(format_duration "$eta" | cut -d. -f1)"
         if [ "$eta_warned" -eq 0 ] && [ "$eta" -gt 43200 ]; then
             eta_warned=1
             log_warn "Estimated upscale time exceeds 12 hours; use a faster model (upscayl-lite-4x) or process the video in chunks."
@@ -3175,7 +3270,11 @@ upscale_frames() {
             log_warn "Estimated upscale time is $(awk -v e="$eta" 'BEGIN { printf "%.1f", e / 3600 }') hours."
         fi
     done
-    UPSCALED_COUNT=$(find "$output_dir" -maxdepth 1 -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+    local count_map
+    count_map=$(new_temp_file)
+    scan_frames "$output_dir" 0 > "$count_map"
+    UPSCALED_COUNT=$(awk -F'\t' '{ seen[$1] = 1 } END { print length(seen) }' "$count_map")
+    rm -f "$count_map"
 }
 
 US_MODEL=""; US_SCALE=2; US_GPU=0; US_TILE="auto"; US_BATCH=0; US_THREADS="1:2:2"
@@ -3316,12 +3415,14 @@ RUN_CHUNK_SECONDS="auto"
 
 run_chunked() {
     local source="$1" chunk_seconds="$2"
+    JOB_DIR=""
     probe_media "$source"
     num_cmp "$M_DURATION" gt 0 || die 4 "Could not determine video duration: $source"
     if [ -n "$SP_FPS" ]; then
         fps_override "$SP_FPS"
         M_FPS_NUM="$FPS_NUM"; M_FPS_DEN="$FPS_DEN"; M_FPS_RATIONAL="$FPS_RATIONAL"; M_FPS_DECIMAL="$FPS_DECIMAL"; M_FPS_TEXT="$FPS_TEXT"
     fi
+    save_media_state
     local start end duration job
     if [ -n "$SP_START" ]; then start=$(parse_time_value "$SP_START") || exit $?; else start=0; fi
     if [ -n "$SP_END" ]; then end=$(parse_time_value "$SP_END") || exit $?; else end="$M_DURATION"; fi
@@ -3385,7 +3486,7 @@ run_chunked() {
     local chunks_dir="$JOB_DIR/chunks"
     local segments c
     segments=()
-    local expected_w=0 expected_h=0
+    local expected_w=0 expected_h=0 frames_done=0
     for c in "${!CH_INDEX[@]}"; do
         local idx="${CH_INDEX[$c]}" cstart="${CH_START[$c]}" cend="${CH_END[$c]}" cframes="${CH_FRAMES[$c]}"
         local free
@@ -3396,7 +3497,7 @@ run_chunked() {
         segment="$chunks_dir/$(printf 'chunk_%04d' "$idx").$ext"
         marker="$JOB_DIR/.done_chunk_$(printf '%04d' "$idx")"
         segments[${#segments[@]}]="$segment"
-        if [ -f "$marker" ] && [ -s "$segment" ]; then continue; fi
+        if [ -f "$marker" ] && [ -s "$segment" ]; then frames_done=$((frames_done + cframes)); continue; fi
         chunk_dir="$chunks_dir/$(printf 'chunk_%04d' "$idx")"
         rm -rf "$chunk_dir"
         frames_dir="$chunk_dir/frames"; upscaled_dir="$chunk_dir/upscaled"
@@ -3409,7 +3510,7 @@ run_chunked() {
         [ "$LAST_RC" -eq 0 ] || { local detail; detail=$(child_tail 50); cleanup_temp_files; die 7 "Chunk $idx extraction failed" "$detail"; }
         cleanup_temp_files
         validate_frame_set "$frames_dir" "$cframes" error 0
-        upscale_frames "$US_MODEL" "$US_SCALE" "$upscaled_dir" "$tile" "$(resolve_batch_size "$US_BATCH" $(( $(job_get width 1920) * scale )) $(( $(job_get height 1080) * scale )))" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "$frames_dir" "$cframes"
+        upscale_frames "$US_MODEL" "$US_SCALE" "$upscaled_dir" "$tile" "$(resolve_batch_size "$US_BATCH" $(( $(job_get width 1920) * scale )) $(( $(job_get height 1080) * scale )))" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "$frames_dir" "$cframes" "$total_frames" "$frames_done"
         validate_frame_set "$upscaled_dir" "$cframes" error 0
         local dims frame_w frame_h
         dims=$(probe_frame_dimensions "${FS_PATHS[0]}") || exit $?
@@ -3433,11 +3534,18 @@ run_chunked() {
         cleanup_temp_files
         [ "$seg_ok" -eq 1 ] || die 7 "Chunk $idx encode failed" "$seg_detail"
         probe_media "$segment"
-        num_cmp "$M_DURATION" gt 0 || die 7 "Chunk $idx segment is invalid"
+        local segment_duration="$M_DURATION"
+        restore_media_state
+        num_cmp "$segment_duration" gt 0 || die 7 "Chunk $idx segment is invalid"
         : > "$marker"
+        frames_done=$((frames_done + cframes))
         [ "$EN_KEEP_CHUNKS" -eq 1 ] || rm -rf "$chunk_dir"
     done
-    [ "$expected_w" -eq 0 ] && [ "${#segments[@]}" -gt 0 ] && { probe_media "${segments[0]}"; expected_w="$M_WIDTH"; expected_h="$M_HEIGHT"; }
+    if [ "$expected_w" -eq 0 ] && [ "${#segments[@]}" -gt 0 ]; then
+        probe_media "${segments[0]}"
+        expected_w="$M_WIDTH"; expected_h="$M_HEIGHT"
+        restore_media_state
+    fi
     local concat_output
     [ "$PRESET_CODEC" = "prores" ] && concat_output="$chunks_dir/concat.mov" || concat_output="$chunks_dir/concat.ts"
     concat_segments "$concat_output" "${segments[@]}"
@@ -3468,12 +3576,13 @@ run_chunked() {
 # ---------------------------------------------------------------------------
 
 RUN_FAILED=0
+RUN_EXIT_CODE=0
 RUN_RESULTS=()
 
 run_one_input() {
     local input="$1" result_file="$2" job output t0 t1 t2 t3
     t0=$(date +%s)
-    run_split 0 1 0 "$input"
+    run_split 0 "${OPT_YES:-0}" 0 "$input"
     job="${JOB_PATHS[0]}"
     t1=$(date +%s)
     run_upscale 0 "$job"
@@ -3492,10 +3601,22 @@ output=$output
 }
 
 run_all() {
-    local inputs=("$@")
+    local inputs
+    inputs=("$@")
     local input result_file err_file err_text rc chunk_value output_text status name
+    if [ "${#inputs[@]}" -gt 1 ] && [ -n "$EN_OUTPUT" ]; then
+        local requested_output requested_base
+        requested_output=$(abspath "$EN_OUTPUT")
+        requested_base=${requested_output##*/}
+        case "$requested_base" in
+            *.*) if [ ! -d "$requested_output" ]; then
+                    die 2 "With multiple inputs, --output must be a directory." "Pass a directory (or omit --output)."
+                 fi ;;
+        esac
+    fi
     RUN_FAILED=0; RUN_RESULTS=()
     for input in "${inputs[@]}"; do
+        JOB_DIR=""
         result_file=$(new_temp_file)
         err_file=$(new_temp_file)
         chunk_value=$(lower "$(trim "$RUN_CHUNK_SECONDS")")
@@ -3527,6 +3648,7 @@ output=$CHUNK_OUTPUT
             [ -n "$err_text" ] || err_text="failed with exit code $rc"
             RUN_RESULTS[${#RUN_RESULTS[@]}]="FAILED|$input|$err_text"
             RUN_FAILED=1
+            [ "$RUN_EXIT_CODE" -eq 0 ] && RUN_EXIT_CODE=$rc
             if [ "$RUN_STOP_ON_ERROR" -eq 1 ]; then
                 rm -f "$result_file" "$err_file"
                 break
@@ -3534,16 +3656,18 @@ output=$CHUNK_OUTPUT
         fi
         rm -f "$result_file" "$err_file"
     done
-    printf '%-32s %-8s %s\n' "INPUT" "STATUS" "OUTPUT"
-    local entry
-    for entry in "${RUN_RESULTS[@]}"; do
-        status="${entry%%|*}"
-        entry="${entry#*|}"
-        input="${entry%%|*}"
-        output_text="${entry#*|}"
-        name=$(basename "$input")
-        printf '%-32s %-8s %s\n' "${name:0:32}" "$status" "$output_text"
-    done
+    if [ "$UVP_QUIET" -eq 0 ]; then
+        printf '%-32s %-8s %s\n' "INPUT" "STATUS" "OUTPUT"
+        local entry
+        for entry in "${RUN_RESULTS[@]}"; do
+            status="${entry%%|*}"
+            entry="${entry#*|}"
+            input="${entry%%|*}"
+            output_text="${entry#*|}"
+            name=$(basename "$input")
+            printf '%-32s %-8s %s\n' "${name:0:32}" "$status" "$output_text"
+        done
+    fi
     [ "$RUN_FAILED" -eq 0 ] && return 0
     return 1
 }
@@ -3610,7 +3734,7 @@ run_clean() {
         [ "$CLEAN_OUTPUT" -eq 1 ] && targets[${#targets[@]}]="$JOB_DIR/output"
         source=$(job_source_path)
         for target in "${targets[@]}"; do
-            target=$(ensure_within "$target" "$JOB_DIR")
+            target=$(ensure_within "$target" "$JOB_DIR") || exit $?
             if same_path "$source" "$target" || within_path "$source" "$target"; then
                 die 4 "Refusing to delete a folder that contains the source video: $target"
             fi
@@ -3836,7 +3960,7 @@ menu_run_all() {
     SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT="png"; SP_JPEG=1; SP_PNG=3
     SP_DENOISE="none"; SP_TONEMAP=0; SP_DECODE="auto"; SP_SCALE="$scale"; SP_TARGET=""
     SP_MODEL="$model"; SP_VERIFY=0; SP_RECURSIVE=0; SP_FORCE=0
-    US_MODEL="$model"; US_SCALE="$scale"; US_GPU="$CFG_GPU"; US_TILE="$CFG_TILE"; US_BATCH="$CFG_BATCH_SIZE"
+    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0
     US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
     EN_PRESET="$preset"; EN_ENCODER="$CFG_DEFAULT_ENCODER"; EN_QUALITY="balanced"; EN_CRF=""
     if [ "$audio" = "auto" ]; then EN_AUDIO=""; else EN_AUDIO="$audio"; fi
@@ -3872,7 +3996,7 @@ menu_upscale() {
     scale=$(ask_value "Scale 2/3/4" "$CFG_DEFAULT_SCALE")
     case "$scale" in 2|3|4) ;; *) printf 'Scale must be 2, 3, or 4.\n'; return 0 ;; esac
     resolve_jobs 0 "$job"
-    US_MODEL="$model"; US_SCALE="$scale"; US_GPU="$CFG_GPU"; US_TILE="$CFG_TILE"; US_BATCH="$CFG_BATCH_SIZE"
+    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0
     US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
     run_upscale 0 "${RESOLVED_JOBS[@]}"
 }
@@ -4045,7 +4169,8 @@ parse_options() {
             --*=*)
                 name="${token%%=*}"
                 value="${token#*=}"
-                set -- "$name" "$value" "${@:3}"
+                shift
+                set -- "$name" "$value" "$@"
                 token="$1"
                 ;;
         esac
@@ -4156,6 +4281,10 @@ main() {
                 prefix[${#prefix[@]}]="$token"
                 i=$((i + 1))
                 ;;
+            --work-dir=*|--config=*|--ffmpeg=*|--ffprobe=*)
+                prefix[${#prefix[@]}]="$token"
+                i=$((i + 1))
+                ;;
             --) die 2 "the following arguments are required: command" ;;
             -*) die 2 "unrecognized argument: $token" "Run with --help for usage." ;;
             *) command="$token"; i=$((i + 1)); break ;;
@@ -4179,6 +4308,11 @@ main() {
     for entry in "${prefix[@]}"; do combined[${#combined[@]}]="$entry"; done
     for entry in "${rest[@]}"; do combined[${#combined[@]}]="$entry"; done
     parse_options "${combined[@]}"
+    case "$command" in
+        status|doctor)
+            [ "${#POSITIONALS[@]}" -eq 0 ] || die 2 "unrecognized arguments: ${POSITIONALS[*]}" "Run with --help for usage."
+            ;;
+    esac
 
     [ "$OPT_VERBOSE" -eq 1 ] && UVP_VERBOSE=1
     [ "$OPT_QUIET" -eq 1 ] && UVP_QUIET=1
@@ -4207,7 +4341,7 @@ main() {
             ;;
         run)
             resolve_inputs "$SP_RECURSIVE" "${POSITIONALS[@]}"
-            if run_all "${INPUT_PATHS[@]}"; then exit 0; else exit 1; fi
+            if run_all "${INPUT_PATHS[@]}"; then exit 0; else exit "${RUN_EXIT_CODE:-1}"; fi
             ;;
         status)
             run_status "$OPT_VERBOSE"
@@ -4230,6 +4364,17 @@ main() {
 if [ "${UPSCAYL_V2_LIB:-0}" != "1" ]; then
     main "$@"
 fi
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -44,14 +44,14 @@ assert_code() {
 }
 
 TEMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/uvp-test.XXXXXX") || exit 1
-trap 'rm -rf "$TEMP_ROOT"' EXIT
+trap 'rm -rf "$TEMP_ROOT" "$UVP_TMP_DIR"' EXIT
 
 # --- string, time, and format helpers ---
 assert_eq "a b" "$(trim "  a b  ")" "trim"
 assert_eq "video" "$(sanitize_job_id "   ")" "sanitize empty"
 assert_eq "a_b" "$(sanitize_job_id "a__b")" "sanitize repeated underscore"
 assert_eq "CON_" "$(sanitize_job_id "CON")" "sanitize reserved"
-assert_eq "Ã…Â¾luÃ…Â¥ouÃ„ÂkÃƒÂ½" "$(sanitize_job_id "Ã…Â¾luÃ…Â¥ouÃ„ÂkÃƒÂ½")" "sanitize unicode"
+assert_eq "Å¾luÅ¥ouÄkÃ½" "$(sanitize_job_id "Å¾luÅ¥ouÄkÃ½")" "sanitize unicode"
 assert_eq "00:00:07.532" "$(format_duration 7.532)" "format duration"
 assert_eq "1.0 KiB" "$(format_bytes 1024)" "format bytes KiB"
 assert_eq "1.5 MiB" "$(format_bytes 1572864)" "format bytes MiB"
@@ -145,6 +145,20 @@ assert_eq "bt709" "$COLOR_VALUE" "color gbr hd fallback"
 color_value color_range weird 240
 assert_eq "tv" "$COLOR_VALUE" "color range invalid to tv"
 
+# --- source media state survives probing a chunk segment/output ---
+M_SOURCE="source.mp4"; M_WIDTH=321; M_HEIGHT=241; M_CHAPTERS=2
+AUDIO_INDEX=(1); AUDIO_CODEC=(aac); SUB_INDEX=(2); SUB_CODEC=(subrip)
+save_media_state
+M_SOURCE="segment.ts"; M_WIDTH=322; M_HEIGHT=242; M_CHAPTERS=0
+AUDIO_INDEX=(); AUDIO_CODEC=(); SUB_INDEX=(); SUB_CODEC=()
+restore_media_state
+assert_eq "source.mp4" "$M_SOURCE" "media state source"
+assert_eq "321" "$M_WIDTH" "media state width"
+assert_eq "2" "$M_CHAPTERS" "media state chapters"
+assert_eq "1" "${#AUDIO_INDEX[@]}" "media state audio"
+assert_eq "1" "${#SUB_INDEX[@]}" "media state subtitle count"
+assert_eq "2" "${SUB_INDEX[0]}" "media state subtitle index"
+
 # --- audio and subtitle plans ---
 PRESET_NAME=mp4-h264; PRESET_CONTAINER=mp4; PRESET_EXT=mp4; PRESET_CODEC=h264
 PRESET_AUDIO=auto; PRESET_SUBS=auto
@@ -186,6 +200,16 @@ if command -v ffmpeg >/dev/null 2>&1; then
     assert_eq "libx264" "${CAND_CODEC[0]}" "encoder cpu forced"
 fi
 
+# --- --opt=value parsing keeps every positional argument ---
+COMMAND=split
+parse_options --format=png "first.mp4" "second.mp4"
+assert_eq "png" "$SP_FORMAT" "opt=value format"
+assert_eq "2" "${#POSITIONALS[@]}" "opt=value positionals"
+assert_eq "first.mp4" "${POSITIONALS[0]}" "opt=value first positional"
+assert_eq "second.mp4" "${POSITIONALS[1]}" "opt=value second positional"
+parse_options --work-dir=/tmp/uvp-work sample.mp4
+assert_eq "/tmp/uvp-work" "$OPT_WORK_DIR" "opt=value work dir"
+
 # --- CLI surface ---
 cli() {
     ( unset UPSCAYL_V2_LIB; bash v2/unix/upscayl-video.sh "$@" )
@@ -205,15 +229,27 @@ if [ "${RUN_V2_INTEGRATION:-0}" = "1" ]; then
         CFG_FFMPEG=$(command -v ffmpeg)
         CFG_FFPROBE=$(command -v ffprobe)
         CLIP="$TEMP_ROOT/clip.mp4"
-        ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=160x120:rate=30" \
+        ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=160x120:rate=25" \
             -f lavfi -i "sine=frequency=440:sample_rate=48000" -t 1 \
             -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest "$CLIP"
         CFG_WORK_DIR="$TEMP_ROOT/integration"
-        SP_FPS=""; SP_START=""; SP_END="0.5"; SP_FORMAT=png; SP_JPEG=1; SP_PNG=3
+        SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT=png; SP_JPEG=1; SP_PNG=3
         SP_DENOISE=none; SP_TONEMAP=0; SP_DECODE=cpu; SP_SCALE=2; SP_TARGET=""
         SP_MODEL=upscayl-lite-4x; SP_VERIFY=0; SP_RECURSIVE=0; SP_FORCE=0
         run_split 0 1 0 "$CLIP"
-        assert_eq "15" "$(job_get frame_count 0)" "integration split frames"
+        assert_eq "25" "$(job_get frame_count 0)" "integration split frames"
+        assert_eq "25/1" "$(job_get fps '')" "integration split fps"
+        JOB_UNDER_TEST="$JOB_DIR"
+        mkdir -p "$TEMP_ROOT/empty-upscaled"
+        EN_PRESET=mp4-h264; EN_ENCODER=cpu; EN_QUALITY=balanced; EN_CRF=""
+        EN_AUDIO=copy; EN_AUDIO_BITRATE=192; EN_ALL_AUDIO=0; EN_SUBS=none
+        EN_TENBIT=0; EN_TARGET=""; EN_CLEANUP=0; EN_OUTPUT=""
+        EN_UPSCALED_DIR="$TEMP_ROOT/empty-upscaled"; EN_PICK=error; EN_VERIFY=0
+        EN_ALLOW_HUGE=0; EN_FORCE=1; EN_KEEP_CHUNKS=0
+        ( run_assemble 0 "$JOB_UNDER_TEST" ) >/dev/null 2>&1
+        assert_code 4 $? "integration bad assemble exit"
+        job_load "$JOB_UNDER_TEST"
+        assert_true "$( [ -n "$(job_get last_error '')" ]; echo $? )" "integration last_error recorded"
         EN_PRESET=mp4-h264; EN_ENCODER=cpu; EN_QUALITY=balanced; EN_CRF=""
         EN_AUDIO=copy; EN_AUDIO_BITRATE=192; EN_ALL_AUDIO=0; EN_SUBS=none
         EN_TENBIT=0; EN_TARGET=""; EN_CLEANUP=0; EN_OUTPUT=""
@@ -221,6 +257,60 @@ if [ "${RUN_V2_INTEGRATION:-0}" = "1" ]; then
         EN_ALLOW_HUGE=0; EN_FORCE=1; EN_KEEP_CHUNKS=0
         run_assemble 0 "$JOB_DIR"
         assert_eq "1" "${#OUTPUTS[@]}" "integration assemble output"
+        OUT_FPS=$("$CFG_FFPROBE" -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=nw=1:nk=1 "${OUTPUTS[0]}" | head -n 1)
+        assert_eq "25/1" "$OUT_FPS" "integration output fps"
+
+        # Chunked run with a fake upscaler, odd dimensions, audio, and chapters.
+        MODEL_DIR="$TEMP_ROOT/fake-models"
+        mkdir -p "$MODEL_DIR"
+        : > "$MODEL_DIR/fake-model.param"
+        : > "$MODEL_DIR/fake-model.bin"
+        FAKE="$TEMP_ROOT/fake-upscayl"
+        cat > "$FAKE" <<'FAKE_EOF'
+#!/usr/bin/env bash
+input=""; output=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -i) input="$2"; shift 2 ;;
+        -o) output="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+for file in "$input"/*; do
+    [ -f "$file" ] || continue
+    cp "$file" "$output/$(basename "$file")"
+done
+FAKE_EOF
+        chmod +x "$FAKE"
+        SRT="$TEMP_ROOT/chunk.srt"
+        printf '1\n00:00:00,200 --> 00:00:01,000\nOne\n\n2\n00:00:01,200 --> 00:00:02,000\nTwo\n' > "$SRT"
+        META="$TEMP_ROOT/chunk.chapters.txt"
+        printf ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=6000\ntitle=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=6000\nEND=12000\ntitle=Two\n' > "$META"
+        CHUNK_CLIP="$TEMP_ROOT/chunk11.mkv"
+        ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc2=size=322x242:rate=25" \
+            -f lavfi -i "sine=frequency=330:sample_rate=48000" \
+            -i "$META" \
+            -vf "format=rgb24,crop=321:241" -t 12 \
+            -map 0:v -map 1:a -map_metadata 2 -map_chapters 2 \
+            -c:v ffv1 -pix_fmt bgr0 -c:a aac -b:a 96k -shortest "$CHUNK_CLIP"
+        CFG_UPSCAYL_BIN="$FAKE"
+        CFG_MODELS_DIR="$MODEL_DIR"
+        US_MODEL=fake-model; US_SCALE=2; US_GPU=0; US_TILE=128; US_BATCH=50
+        US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_RETRY=0
+        SP_FORMAT=png; SP_DENOISE=none; SP_TONEMAP=0; SP_DECODE=cpu
+        SP_SCALE=2; SP_TARGET=""; SP_MODEL=fake-model; SP_FPS=""; SP_START=""; SP_END=""
+        EN_TARGET=""; EN_OUTPUT="$TEMP_ROOT/chunk-out.mp4"; EN_KEEP_CHUNKS=0
+        EN_CLEANUP=0; EN_ALLOW_HUGE=0; EN_FORCE=1
+        RUN_CLEANUP=0
+        run_chunked "$CHUNK_CLIP" 10
+        CHUNK_INFO=$("$CFG_FFPROBE" -v error -count_frames -select_streams v:0 \
+            -show_entries stream=width,height,nb_read_frames -of default=nw=1 "$CHUNK_OUTPUT")
+        assert_eq "322" "$(printf '%s\n' "$CHUNK_INFO" | sed -n 's/^width=//p')" "chunked output width"
+        assert_eq "242" "$(printf '%s\n' "$CHUNK_INFO" | sed -n 's/^height=//p')" "chunked output height"
+        assert_eq "300" "$(printf '%s\n' "$CHUNK_INFO" | sed -n 's/^nb_read_frames=//p')" "chunked output frames"
+        CHAPTERS=$("$CFG_FFPROBE" -v error -show_chapters -of csv=p=0 "$CHUNK_OUTPUT" | grep -c . || true)
+        assert_eq "2" "$CHAPTERS" "chunked output chapters"
     fi
 fi
 
@@ -230,5 +320,6 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 exit 0
+
 
 

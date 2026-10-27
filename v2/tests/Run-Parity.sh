@@ -31,17 +31,20 @@ if ! command -v cygpath >/dev/null 2>&1; then
 fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/uvp-parity.XXXXXX") || exit 1
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" "$UVP_TMP_DIR"' EXIT
 WIN_TMP=$(cygpath -w "$TMP")
 WIN_FFMPEG=$(cygpath -w "$FFMPEG")
 WIN_FFPROBE=$(cygpath -w "$FFPROBE")
-CLIP="$TMP/clip.mp4"
+CLIP_SIMPLE="$TMP/clip.mp4"
 "$FFMPEG" -hide_banner -loglevel error -y \
-    -f lavfi -i "testsrc2=size=160x120:rate=30" \
+    -f lavfi -i "testsrc2=size=160x120:rate=25" \
     -f lavfi -i "sine=frequency=440:sample_rate=48000" \
     -t 1 -c:v libx264 -preset veryfast -pix_fmt yuv420p \
     -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv \
-    -c:a aac -b:a 96k -shortest "$CLIP" || { printf 'fixture generation failed\n'; exit 1; }
+    -c:a aac -b:a 96k -shortest "$CLIP_SIMPLE" || { printf 'fixture generation failed\n'; exit 1; }
+CLIP="$TMP/quote' [bracket]/clip.mp4"
+mkdir -p "$(dirname "$CLIP")"
+cp "$CLIP_SIMPLE" "$CLIP"
 WIN_CLIP=$(cygpath -w "$CLIP")
 
 # --- V1 split and identity assemble ---
@@ -108,4 +111,5 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 exit 0
+
 

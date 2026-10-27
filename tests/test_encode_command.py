@@ -12,6 +12,7 @@ from upscayl_video.encode import (
     SubtitlePlan,
     SubtitleStreamPlan,
     build_assemble_command,
+    build_segment_command,
     validate_output,
 )
 from upscayl_video.errors import OutputValidationError, ValidationError
@@ -164,6 +165,28 @@ class TestCommand(unittest.TestCase):
                     EncodeOptions(encoder="cpu"), 320, 240, False, 1,
                     Logger(quiet=True),
                 )
+
+
+class TestSegmentCommand(unittest.TestCase):
+    def test_segment_honors_target_height(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = make_job(td)
+            media = make_media_info(Path("input.mp4"), width=640, height=480)
+            frame_set = FrameSet(
+                Path("frames"), "png", (1,),
+                (Path("frames/frame_00000001.png"),),
+            )
+            args = build_segment_command(
+                job, frame_set, media, PRESETS["mp4-h264"],
+                EncoderChoice("cpu", "libx264", ()),
+                EncodeOptions(encoder="cpu", target_height=240),
+                Path("chunk.ts"),
+                frame_width=640, frame_height=480,
+            )
+            self.assertIn("-vf", args)
+            self.assertIn("scale=-2:240:flags=lanczos", args)
+            self.assertIn("mpegts", args)
+            self.assertIn("-an", args)
 
 
 class TestColorFallback(unittest.TestCase):

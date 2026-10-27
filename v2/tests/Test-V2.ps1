@@ -1,4 +1,4 @@
-﻿# Test-V2.ps1 -- plain PowerShell test harness for the V2 Windows implementation.
+# Test-V2.ps1 -- plain PowerShell test harness for the V2 Windows implementation.
 # No Pester dependency. Exits nonzero when any assertion fails.
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +55,7 @@ if (Test-Path -LiteralPath $script:Script) {
     Assert-Equal 'a_b' (Sanitize-JobId 'a<b') 'sanitize invalid char'
     Assert-Equal 'CON_' (Sanitize-JobId 'CON') 'sanitize reserved name'
     Assert-Equal ('x' * 80) (Sanitize-JobId ('x' * 200)) 'sanitize truncation'
-    Assert-Equal 'Å¾luÅ¥ouÄkÃ½' (Sanitize-JobId 'Å¾luÅ¥ouÄkÃ½') 'sanitize unicode preserved'
+    Assert-Equal 'žluťoučký' (Sanitize-JobId 'žluťoučký') 'sanitize unicode preserved'
 
     # --- parse_time ---
     Assert-Equal 5 (Parse-TimeValue '5') 'parse_time seconds'
@@ -200,6 +200,24 @@ function Assert-ThrowsCode {
     Assert-Equal 'bt709' (Get-ColorValue $fakeJob 'gbr' 'colorspace' -Height 1080) 'color gbr falls back to hd'
     Assert-Equal 'tv' (Get-ColorValue $fakeJob 'weird' 'color_range' -Height 240) 'color range invalid to tv'
     Assert-Equal 'pc' (Get-ColorValue $fakeJob 'pc' 'color_range' -Height 240) 'color range pc kept'
+
+    # --- segment command honors target height ---
+    $segJob = @{ path = 'x'; data = [ordered]@{ fps = '30/1' } }
+    $segMedia = @{
+        fps_rational = '30/1'; fps_den = 1; fps_decimal = 30.0
+        color_primaries = 'bt709'; color_trc = 'bt709'; colorspace = 'bt709'
+        color_range = 'tv'; chapters = 0
+    }
+    $segFrames = @{ directory = 'frames'; extension = 'png'; indices = @(1); paths = @('frames/frame_00000001.png'); count = 1 }
+    $segOptions = @{
+        quality = 'balanced'; crf = $null; target_height = 240; ten_bit = $false
+        allow_huge = $false; preset = 'mp4-h264'
+    }
+    $segChoice = @{ family = 'cpu'; video_codec = 'libx264'; quality_args = @() }
+    $segCommand = Build-SegmentCommand -Job $segJob -FrameSet $segFrames -Media $segMedia -Preset (Resolve-Preset 'mp4-h264') -Encoder $segChoice -Options $segOptions -Output 'chunk.ts' -FrameWidth 640 -FrameHeight 480
+    Assert-True (@($segCommand) -contains '-vf') 'segment has filters'
+    Assert-True (@($segCommand) -contains 'scale=-2:240:flags=lanczos') 'segment honors target height'
+    Assert-True (@($segCommand) -contains 'mpegts') 'segment uses mpegts'
 
     # --- encoder candidates ---
     $ffmpeg = 'C:\FFMPEG\ffmpeg.exe'

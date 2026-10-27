@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Upscayl Video Pipeline V2 - native Windows implementation.
@@ -2290,7 +2290,11 @@ function Repair-ColorTags {
     if (@('mp4', 'mov') -contains $Container) { $arguments += @('-movflags', '+faststart') }
     $arguments += $temporary
     Invoke-Child -Arguments $arguments | Out-Null
-    Move-Item -LiteralPath $temporary -Destination $Path -Force
+    try {
+        [IO.File]::Replace($temporary, $Path, $null)
+    } catch {
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
 }
 
 function Test-Output {
@@ -2846,12 +2850,12 @@ function Resolve-Inputs {
         $text = [string]$raw
         $path = Expand-HomePath $text
         $candidates = @()
-        if ($text -match '[\*\?\[]') {
-            $candidates = @(Get-ChildItem -Path $path -File -Recurse:$Recursive -ErrorAction SilentlyContinue)
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $candidates = @(Get-Item -LiteralPath $path)
         } elseif (Test-Path -LiteralPath $path -PathType Container) {
             $candidates = @(Get-ChildItem -LiteralPath $path -File -Recurse:$Recursive -ErrorAction SilentlyContinue)
-        } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
-            $candidates = @(Get-Item -LiteralPath $path)
+        } elseif ($text -match '[\*\?\[]') {
+            $candidates = @(Get-ChildItem -Path $path -File -Recurse:$Recursive -ErrorAction SilentlyContinue)
         }
         foreach ($candidate in $candidates) {
             if ($candidate.PSIsContainer -ne $false) { continue }
@@ -3359,9 +3363,12 @@ function Invoke-ChunkedRun {
             $outDims = Get-OutputDimensions -FrameWidth $frameWidth -FrameHeight $frameHeight -TargetHeight $targetHeight -AllowHuge $Options.encode.allow_huge
             $expectedWidth = [int]$outDims[0]
             $expectedHeight = [int]$outDims[1]
+            $segmentOptions = @{}
+            foreach ($optionKey in $Options.encode.Keys) { $segmentOptions[$optionKey] = $Options.encode[$optionKey] }
+            $segmentOptions.target_height = $targetHeight
             $segmentError = $null
             foreach ($candidate in $candidates) {
-                $command = Build-SegmentCommand -Job $job -FrameSet $frameSet -Media $media -Preset $preset -Encoder $candidate -Options $Options.encode -Output $segment -FrameWidth $frameWidth -FrameHeight $frameHeight
+                $command = Build-SegmentCommand -Job $job -FrameSet $frameSet -Media $media -Preset $preset -Encoder $candidate -Options $segmentOptions -Output $segment -FrameWidth $frameWidth -FrameHeight $frameHeight
                 $command[0] = $Config.ffmpeg
                 try {
                     Invoke-Child -Arguments $command | Out-Null
@@ -3423,6 +3430,13 @@ function Invoke-ChunkedRun {
 
 function Invoke-RunAll {
     param([string[]]$Inputs, $Config, $Options, $Logger)
+    if ($Inputs.Count -gt 1 -and $Options.encode.output) {
+        $requestedOutput = Resolve-AbsolutePath (Expand-HomePath ([string]$Options.encode.output))
+        $treatAsDirectory = (Test-Path -LiteralPath $requestedOutput -PathType Container) -or ([IO.Path]::GetExtension($requestedOutput) -eq '')
+        if (-not $treatAsDirectory) {
+            throw [PipelineException]::new('With multiple inputs, --output must be a directory.', 'Pass a directory (or omit --output).', 2)
+        }
+    }
     $results = @()
     foreach ($inputPath in $Inputs) {
         $chunkValue = ([string]$Options.chunk_seconds).Trim().ToLowerInvariant()
@@ -4110,8 +4124,8 @@ function Invoke-Menu {
                     recursive = $false; force = $false
                 }
                 $upscale = @{
-                    model = $model; scale = $scale; gpu = $Config.gpu; tile = $Config.tile;
-                    batch_size = $Config.batch_size; threads = '1:2:2'; icd = $null;
+                    model = $model; scale = $scale; gpu = 0; tile = 'auto';
+                    batch_size = 0; threads = '1:2:2'; icd = $null;
                     upscayl_bin = $null; models_dir = $null; upscaled_dir = $null;
                     retry = 1; force = $false
                 }
@@ -4164,8 +4178,8 @@ function Invoke-Menu {
                 }
                 $jobs = Resolve-Jobs -Arguments @($jobPath) -Config $Config -AllJobs $false
                 $options = @{
-                    model = $model; scale = $scale; gpu = $Config.gpu; tile = $Config.tile;
-                    batch_size = $Config.batch_size; threads = '1:2:2'; icd = $null;
+                    model = $model; scale = $scale; gpu = 0; tile = 'auto';
+                    batch_size = 0; threads = '1:2:2'; icd = $null;
                     upscayl_bin = $null; models_dir = $null; upscaled_dir = $null;
                     retry = 1; force = $false
                 }
@@ -4263,6 +4277,7 @@ function Get-CommandOptionsSpec {
         'force'    = @{ kind = 'flag' }
         'dry-run'  = @{ kind = 'flag' }
         'help'     = @{ kind = 'flag' }
+        'version'  = @{ kind = 'flag' }
     }
     $add = {
         param([string]$Name, [string]$Kind, [string]$Dest = $null, [array]$Choices = $null, [bool]$Int = $false)
@@ -4532,9 +4547,16 @@ function Invoke-Main {
     $spec = Get-CommandOptionsSpec $command
     $parsed = Read-CommandLine -Tokens $remaining -Spec $spec
     $opts = $parsed.options
+    if ($opts.ContainsKey('version')) {
+        [Console]::Out.WriteLine($script:ProgramName + ' ' + $script:V2Version)
+        return 0
+    }
     if ($opts.ContainsKey('help')) {
         Show-Help
         return 0
+    }
+    if ((@('status', 'doctor') -contains $command) -and $parsed.positionals.Count -gt 0) {
+        throw [PipelineException]::new('unrecognized arguments: ' + ($parsed.positionals -join ' '), 'Run with --help for usage.', 2)
     }
 
     $logger = New-Logger -VerboseOutput ([bool]$opts.ContainsKey('verbose')) -Quiet ([bool]$opts.ContainsKey('quiet'))
@@ -4729,6 +4751,9 @@ try {
     if ($script:Verbose -or $env:UPSCAYL_V2_DEBUG -eq '1') { Write-Err ($_ | Out-String); Write-Err $_.ScriptStackTrace }
     exit 1
 }
+
+
+
 
 
 

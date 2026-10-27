@@ -1,4 +1,4 @@
-# Validation record — V1 and V2
+﻿# Validation record â€” V1 and V2
 
 Evidence from local runs on 2026-10-26/27, using the three files in
 `TEST_EXAMPLE_VIDEOS/` (not committed) where noted, plus generated fixtures.
@@ -8,18 +8,18 @@ Upscayl 2.15.0 with `upscayl-lite-4x` unless stated otherwise.
 
 ```
 python -m unittest discover -s tests -q
-Ran 174 tests
+Ran 176 tests
 OK
 ```
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File v2/tests/Test-V2.ps1
-68 passed, 0 failed
+71 passed, 0 failed
 ```
 
 ```
 bash v2/tests/Test-V2.sh
-63 passed, 0 failed   (with RUN_V2_INTEGRATION=1)
+82 passed, 0 failed   (with RUN_V2_INTEGRATION=1)
 ```
 
 ```
@@ -43,9 +43,9 @@ the extracted frames (`--upscaled-dir .../frames`, identity upscale).
 
 | Clip | Duration | Frames | PNG size | Output | Output frames | Audio |
 |---|---:|---:|---:|---|---:|---|
-| `balenie sa na poradu.mov` | 7.531667 s | 225 | 0.4 GB | 1376×1840 H.264 | 225 | AAC 7.522 s |
-| `praca2.mov` | 18.526667 s | 556 | 1.1 GB | 1552×2064 H.264 | 556 | AAC 18.508 s |
-| `volanie s kolegom.mov` | 83.150000 s | 2495 | 4.7 GB | 1472×1952 H.264 | 2495 | AAC 83.105 s |
+| `balenie sa na poradu.mov` | 7.531667 s | 225 | 0.4 GB | 1376Ã—1840 H.264 | 225 | AAC 7.522 s |
+| `praca2.mov` | 18.526667 s | 556 | 1.1 GB | 1552Ã—2064 H.264 | 556 | AAC 18.508 s |
+| `volanie s kolegom.mov` | 83.150000 s | 2495 | 4.7 GB | 1472Ã—1952 H.264 | 2495 | AAC 83.105 s |
 
 All outputs report `color_range=tv`, `color_space=bt709`,
 `color_transfer=bt709`, `color_primaries=bt709`. The source clips are HLG
@@ -58,9 +58,9 @@ upscayl-lite-4x --scale 2 --tile 256`.
 
 | Clip | Output size | Frames | Duration | Audio |
 |---|---:|---:|---:|---|
-| `balenie...` | 2752×3680 | 30 | 1.004 s | AAC 1.000 s |
-| `praca2` | 3104×4128 | 30 | 0.9996 s | AAC 1.000 s |
-| `volanie...` | 2944×3904 | 30 | 0.9998 s | AAC 1.003 s |
+| `balenie...` | 2752Ã—3680 | 30 | 1.004 s | AAC 1.000 s |
+| `praca2` | 3104Ã—4128 | 30 | 0.9996 s | AAC 1.000 s |
+| `volanie...` | 2944Ã—3904 | 30 | 0.9998 s | AAC 1.003 s |
 
 All outputs are H.264 with BT.709 tags. For `praca2`, H.264 NVENC and AMF
 reject the 4128-pixel height (H.264 hardware limit), so the automatic fallback
@@ -76,7 +76,7 @@ run "praca2.mov" --chunk-seconds 10 --tonemap \
   --preset mp4-h264 --encoder auto --audio copy
 ```
 
-Result: 2 chunks, 556 frames, 3104×4128, 18.526667 s, AAC 18.508 s, BT.709,
+Result: 2 chunks, 556 frames, 3104Ã—4128, 18.526667 s, AAC 18.508 s, BT.709,
 `chunks/` removed, `.done_chunk_0001` and `.done_chunk_0002` present. The
 upscale took about 12 minutes on the RTX 3060 Laptop.
 
@@ -86,11 +86,11 @@ upscale took about 12 minutes on the RTX 3060 Laptop.
 `--chunk-seconds 30`, the same model/settings. Result:
 
 - 3 chunks, 2,495 output frames.
-- 2944×3904 H.264, 83.116689 s.
+- 2944Ã—3904 H.264, 83.116689 s.
 - AAC stereo, 83.105 s, start 0.
 - BT.709 primaries/transfer/matrix, TV range.
 - 586.9 MB output.
-- `chunks/` removed; `.done_chunk_0001`–`.done_chunk_0003` present.
+- `chunks/` removed; `.done_chunk_0001`â€“`.done_chunk_0003` present.
 - No errors in `run.log`.
 
 ## V1 fixes found during V2 parity work
@@ -107,23 +107,50 @@ The parity work exposed real V1 bugs; all are fixed and covered by tests:
 - Re-splitting a job without `--end` no longer reports a spurious settings
   difference.
 
+## Fixes found by the fresh review
+
+The whole-branch review (after the first green matrix) found and we fixed:
+
+- Bash `probe_media` now copies the normalized fps into `M_FPS_*`; 25 fps
+  sources assemble, resume, and chunk correctly.
+- Bash chunked runs save/restore the source media state around segment/output
+  probes, so later chunks keep the source width/height/fps and chapters.
+- Bash `--opt=value` parsing no longer drops the following argument, and
+  `--work-dir=DIR` before the command is accepted.
+- Bash no longer uses `set -u`; bash 3.2 rejects empty array expansions under
+  nounset, which would have broken normal assemble/split/clean paths.
+- Bash uses one process-wide temp directory with an EXIT trap instead of
+  leaking one file pair per child process.
+- Bash converts POSIX paths for native Windows FFmpeg/Upscayl when `cygpath`
+  exists, and treats an existing literal file/folder as a literal input before
+  glob expansion (also fixed in V1 and V2 PowerShell).
+- Bash records `last_error` in `job.txt` on stage failures and preserves the
+  original exit code for `run --stop-on-error`.
+- V1 and V2 PowerShell build chunk segments with the job's stored
+  `target_height`, not only the value repeated on this invocation.
+- `run --output FILE` with multiple inputs is rejected with exit 2 in V1, V2
+  PowerShell, and bash.
+- V2 PowerShell supports `--version` after a command and rejects extra
+  positional arguments on `status`/`doctor`.
+- The V2 PowerShell color remux uses an atomic replace.
+
 ## V2 PowerShell
 
-- 68 unit tests pass, including contract parsing, fps, color fallback, audio
-  and subtitle plans, chunk accounting, and encoder selection.
-- Real Upscayl on a 0.5 s HLG window: 15 frames, 2752×3680, AAC, BT.709.
+- 71 unit tests pass, including contract parsing, fps, color fallback, audio
+  and subtitle plans, chunk accounting, color tags, and encoder selection.
+- Real Upscayl on a 0.5 s HLG window: 15 frames, 2752Ã—3680, AAC, BT.709.
 - Real `run` on a 5 s generated clip with AAC audio, `mov_text` subtitles, and
-  chapters: 150 frames, 640×480, 5.000 s, AAC 4.992 s, one subtitle stream.
+  chapters: 150 frames, 640Ã—480, 5.000 s, AAC 4.992 s, one subtitle stream.
 - Real chunked `run` on 12 s (360 frames) with `--chunk-seconds 10`: 2 chunks,
   360 frames, 12.000 s, AAC, `chunks/` removed, markers present.
 - Assemble paths verified: `mp4-h264`, `mkv-hevc` (`subrip`), `mov-prores`
   (`prores`, `yuv422p10le`, `pcm_s24le`), `mp4-hevc --10bit`
   (`yuv420p10le`), target-height downscale, no-audio, odd dimensions
-  (321×241 source padded to 322×242), JPEG frames, trim with audio re-encode,
+  (321Ã—241 source padded to 322Ã—242), JPEG frames, trim with audio re-encode,
   GUI-suffixed names, duplicate resolution with `--pick newest`, resume, and
   model/scale force behaviour.
-- V1 ↔ V2 cross-version matrix: V1 split → V2 assemble, V2 split → V1 assemble,
-  V2 → V2, V1 → V1 on MP4, MKV+MP3+SRT+chapters, and odd-dimension FFV1.
+- V1 â†” V2 cross-version matrix: V1 split â†’ V2 assemble, V2 split â†’ V1 assemble,
+  V2 â†’ V2, V1 â†’ V1 on MP4, MKV+MP3+SRT+chapters, and odd-dimension FFV1.
   All produced matching frame counts, dimensions, durations, audio, subtitle
   counts, and color tags.
 
@@ -131,9 +158,9 @@ The parity work exposed real V1 bugs; all are fixed and covered by tests:
 
 Validated on Git Bash for Windows (POSIX paths, native Windows FFmpeg/Upscayl):
 
-- 63 tests pass (including an optional real-media split/assemble integration).
+- 82 tests pass (including a 25 fps integration, a failing-assemble last_error check, and a chunked fake-upscaler run with 321×241 frames, audio, and chapters).
 - `doctor` green, including the Upscayl smoke test.
-- Real Upscayl on a 0.5 s clip: 15 frames, 640×480.
+- Real Upscayl on a 0.5 s clip: 15 frames, 640Ã—480.
 - Real `run` on a 5 s clip with audio and `mov_text` subtitles: 150 frames,
   5.000 s, AAC, subtitle preserved.
 - Real chunked `run` on 12 s with `--chunk-seconds 10`: 2 chunks, 360 frames,
@@ -163,3 +190,5 @@ Validated on Git Bash for Windows (POSIX paths, native Windows FFmpeg/Upscayl):
   0.5 s, 5 s, and 12 s jobs, including chunking.
 - Native Linux/macOS execution of the bash implementation and macOS bash 3.2.
   Only Git Bash on Windows and `bash -n` syntax checks were run.
+
+
