@@ -53,6 +53,7 @@ class EncodeOptions:
     allow_huge: bool = False
     force: bool = False
     keep_chunks: bool = False
+    ffmpeg_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -547,6 +548,7 @@ def build_assemble_command(
         if duration_value <= 0:
             duration_value = frame_set.count / max(media.fps_decimal, 1.0)
         args.extend(["-t", f"{duration_value:.6f}"])
+    args.extend(options.ffmpeg_args)
     args.append(str(output))
     return args
 

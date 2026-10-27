@@ -148,6 +148,36 @@ VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
 the AMD `vkEnumeratePhysicalDevices failed 5` error. If the projected time
 exceeds one hour, the command asks for confirmation; `--yes` skips the prompt.
 
+### `split-all`
+
+```bash
+upscayl-video split-all [--format png|jpg] [--png-compression N] \
+  [--jpeg-quality N] [--denoise none|light|medium|strong] \
+  [--decode cpu|gpu|auto] [--tonemap|--no-tonemap] \
+  [--scale 2|3|4] [--model NAME] [--dry-run] [--yes]
+```
+
+Scans `input_dir` (default `input` next to `config.txt`), splits every video
+into `work/<job>/batch00001/in`, extracts every audio track to
+`work/<job>/audio`, creates `batch00001/out`, and writes `work/manifest.csv`
+plus `work/README-UPScayl.txt`. HDR is tonemapped by default. The point the
+Upscayl GUI at `batch00001/in` and `batch00001/out`.
+
+### `finish`
+
+```bash
+upscayl-video finish [--all] [--job NAME ...] \
+  [--profile default|fast|quality] [--preset NAME] \
+  [--encoder auto|nvidia|amd|cpu] [--quality fast|balanced|quality] [--crf N] \
+  [--audio auto|copy|aac|pcm|none] [--subs auto|copy|convert|none] \
+  [--ffmpeg-args "..."] [--keep] [--yes]
+```
+
+Assembles jobs from `work/`, moves each video to `output_dir`, and removes the
+whole job folder. Without `--all` or `--job`, it lists jobs and asks. `--keep`
+keeps the work folder. `--ffmpeg-args` appends extra FFmpeg flags; structural
+flags (`-i`, `-map`, filters, `-y`, `-f`) are rejected.
+
 ### `model-test`
 
 ```bash
@@ -225,15 +255,21 @@ you choose one or all.
 ```
 work/<job_id>/
   job.txt
-  source.txt
-  frames/frame_00000001.png ...
-  upscaled/frame_00000001.png ...
-  sequence/                  # transient normalized names
-  output/<stem>_upscaled.mp4
+  audio/
+    track01.mka
+    info.txt
+  batch00001/
+    in/frame_00000001.png ...
+    out/frame_00000001.png ...
+  output/<stem>_upscaled.mp4      # transient; finish publishes it
   logs/
   .done_split
   .done_assemble
 ```
+
+Older jobs use `frames/` and `upscaled/` instead of `batch00001/in|out`; the
+assembly code accepts both. `job.txt` stores `frames_dir` and `upscaled_dir`
+relative to the job folder.
 
 `job.txt` is a UTF-8 key=value file. It is the shared contract for later
 versions; do not edit it while a stage is running.
@@ -248,8 +284,9 @@ ffmpeg=C:\FFMPEG\ffmpeg.exe
 ffprobe=C:\FFMPEG\ffprobe.exe
 upscayl_bin=C:\Program Files\Upscayl\resources\bin\upscayl-bin.exe
 models_dir=D:\AI\UpscaylModels\models
-work_dir=D:\UpscaylVideo
+work_dir=D:\UpscaylVideo\work
 output_dir=D:\UpscaylVideo\output
+input_dir=D:\UpscaylVideo\input
 default_model=upscayl-standard-4x
 default_scale=2
 default_preset=mp4-h264

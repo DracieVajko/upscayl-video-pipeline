@@ -18,6 +18,7 @@ DEFAULTS: dict[str, str] = {
     "models_dir": "auto",
     "work_dir": "work",
     "output_dir": "output",
+    "input_dir": "input",
     "default_model": "upscayl-standard-4x",
     "default_scale": "2",
     "default_preset": "mp4-h264",
@@ -47,6 +48,7 @@ class Config:
     models_dir: Path | None
     work_dir: Path
     output_dir: Path
+    input_dir: Path
     default_model: str
     default_scale: int
     default_preset: str
@@ -253,6 +255,10 @@ def load_config(
     if not output_dir_value.is_absolute():
         output_dir_value = origin_base("output_dir") / output_dir_value
 
+    input_dir_value = Path(merged["input_dir"]).expanduser()
+    if not input_dir_value.is_absolute():
+        input_dir_value = origin_base("input_dir") / input_dir_value
+
     default_scale = _parse_int(merged["default_scale"], "default_scale")
     if default_scale not in {2, 3, 4}:
         raise ValidationError("default_scale must be 2, 3, or 4")
@@ -302,6 +308,7 @@ def load_config(
         models_dir=optional_path("models_dir"),
         work_dir=work_dir_value.resolve(),
         output_dir=output_dir_value.resolve(),
+        input_dir=input_dir_value.resolve(),
         default_model=merged["default_model"].strip(),
         default_scale=default_scale,
         default_preset=default_preset,

@@ -1,8 +1,8 @@
 # Workspace, Batches, and Two-Phase Workflow — Design
 
-- **Status:** approved
+- **Status:** V1 implemented; V2 follow-up
 - **Date:** 2026-10-27
-- **Scope:** V1 (Python) and V2 (PowerShell, bash)
+- **Scope:** V1 (implemented); V2 PowerShell/bash port is the remaining step
 - **Related:** `docs/USAGE.md`, `docs/VALIDATION.md`, `v2/README.md`
 
 ## 1. Context

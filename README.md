@@ -50,6 +50,8 @@ for the original root.
 
 - One or many input videos, each with its own `work/<job>/` folder; `upscale`
   and `assemble` accept a job folder or the work directory.
+- `split-all` + `finish`: `input/` → `work/<job>/batch00001/in|out` → `output/`,
+  with extracted audio and an empty `work/` after success.
 - Split to PNG or JPEG with optional denoise, HDR tonemapping, CFR conversion,
   resume, `--decode auto` benchmarking, and a sample-based disk estimate.
 - `--dry-run` prints the plan and creates no job or frames.
@@ -81,6 +83,19 @@ for the original root.
 V2 bash has been exercised on Git Bash for Windows and with syntax checks for
 bash 3.2, but not on native Linux/macOS. Details in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
+## Workspace flow
+
+Put the originals in `input/`, then:
+
+```bash
+upscayl-video split-all
+# In Upscayl: work\<job>\batch00001\in -> work\<job>\batch00001\out
+upscayl-video finish --all
+```
+
+`finish` publishes each video to `output/` and removes the job folder, so
+`work/` is empty afterwards. `--keep` keeps the work folder.
 
 ## Custom models
 

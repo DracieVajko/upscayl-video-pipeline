@@ -87,6 +87,23 @@ because the AMD Vulkan driver breaks device enumeration, as documented in
 
 A smaller 2-model × 2-frame run produced the same layout and report.
 
+## Workspace flow (2026-10-27)
+
+`split-all` on `Test3_SecurityCamera_Dog` (5.023 s, 303 frames):
+
+- 303 frames in `work/<job>/batch00001/in`; `batch00001/out` created;
+- `audio/track01.mka` and `audio/info.txt` extracted;
+- `job.txt` stores `frames_dir=batch00001/in`,
+  `upscaled_dir=batch00001/out`, `layout=batches`;
+- `manifest.csv` and `README-Upscayl.txt` written.
+
+`finish --all --preset mp4-h264 --encoder cpu` with identity frames (the input
+copied to `out`):
+
+- output at `output/Test3_SecurityCamera_Dog_upscaled.mp4`, 960×720,
+  303 frames, 5.023 s, one AAC track;
+- `work/` empty afterwards (0 entries).
+
 ## V1: full split and full assemble (no upscale)
 
 All three clips were split with `--tonemap` and then assembled directly from

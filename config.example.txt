@@ -11,6 +11,7 @@ upscayl_bin=auto
 models_dir=auto
 work_dir=work
 output_dir=output
+input_dir=input
 default_model=upscayl-standard-4x
 default_scale=2
 default_preset=mp4-h264

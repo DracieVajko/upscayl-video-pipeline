@@ -76,11 +76,23 @@ class Job:
 
     @property
     def frames_dir(self) -> Path:
+        value = self.data.get("frames_dir")
+        if value:
+            path = Path(value).expanduser()
+            return path if path.is_absolute() else self.path / path
         return self.path / "frames"
 
     @property
     def upscaled_dir(self) -> Path:
+        value = self.data.get("upscaled_dir")
+        if value:
+            path = Path(value).expanduser()
+            return path if path.is_absolute() else self.path / path
         return self.path / "upscaled"
+
+    @property
+    def audio_dir(self) -> Path:
+        return self.path / "audio"
 
     @property
     def chunks_dir(self) -> Path:

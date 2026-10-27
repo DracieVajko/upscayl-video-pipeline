@@ -85,7 +85,8 @@ repository layout, not a copied `v2/` folder.
 
 ## Known differences
 
-- `model-test` is not implemented in V2 yet; use V1 for model comparison.
+- `split-all`, `finish`, and `model-test` are V1-only for now; the V2 ports are
+  a follow-up.
 - Console progress is simpler in V2 (batch counts) and debug commands go to
   stderr.
 - On Unix, `--icd auto` does not auto-select an NVIDIA ICD, matching V1; use

@@ -1455,11 +1455,7 @@ def run_assemble(
             upscaled_dir = (
                 Path(options.upscaled_dir).expanduser()
                 if options.upscaled_dir is not None
-                else (
-                    Path(job.get("upscaled_dir")).expanduser()
-                    if job.get("upscaled_dir")
-                    else job.upscaled_dir
-                )
+                else job.upscaled_dir
             )
             if not upscaled_dir.is_dir():
                 raise ValidationError(

@@ -33,6 +33,7 @@ def _global_parent() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--work-dir", default=argparse.SUPPRESS)
     parent.add_argument("--output-dir", default=argparse.SUPPRESS)
+    parent.add_argument("--input-dir", default=argparse.SUPPRESS)
     parent.add_argument("--config", default=argparse.SUPPRESS)
     parent.add_argument("--ffmpeg", default=argparse.SUPPRESS)
     parent.add_argument("--ffprobe", default=argparse.SUPPRESS)
@@ -99,6 +100,41 @@ def build_parser() -> argparse.ArgumentParser:
     model_test.add_argument("--tonemap", dest="tonemap", action="store_true", default=None)
     model_test.add_argument("--no-tonemap", dest="tonemap", action="store_false")
     model_test.add_argument("--open", dest="open_report", action="store_true")
+
+    split_all = subparsers.add_parser(
+        "split-all",
+        help="Split every video in the input folder into Upscayl batches",
+        parents=[parent],
+    )
+    split_all.add_argument("--format", choices=("png", "jpg"), default="png")
+    split_all.add_argument("--png-compression", type=int, default=1)
+    split_all.add_argument("--jpeg-quality", type=int, default=1)
+    split_all.add_argument("--denoise", choices=("none", "light", "medium", "strong"), default="none")
+    split_all.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="auto")
+    split_all.add_argument("--tonemap", dest="tonemap", action="store_true", default=None)
+    split_all.add_argument("--no-tonemap", dest="tonemap", action="store_false")
+    split_all.add_argument("--scale", type=int, choices=(2, 3, 4), default=None)
+    split_all.add_argument("--model", default=None)
+
+    finish = subparsers.add_parser(
+        "finish",
+        help="Assemble upscaled batches and publish them to the output folder",
+        parents=[parent],
+    )
+    finish.add_argument("--all", dest="all_jobs", action="store_true")
+    finish.add_argument("--job", dest="jobs", action="append", default=[])
+    finish.add_argument("--profile", choices=("default", "fast", "quality"), default="default")
+    finish.add_argument("--preset", choices=tuple(PRESETS), default=None)
+    finish.add_argument("--encoder", choices=("auto", "nvidia", "amd", "cpu"), default=None)
+    finish.add_argument("--quality", choices=("fast", "balanced", "quality"), default=None)
+    finish.add_argument("--crf", type=int, default=None)
+    finish.add_argument("--audio", choices=("auto", "copy", "aac", "pcm", "none"), default=None)
+    finish.add_argument("--audio-bitrate", type=int, default=192)
+    finish.add_argument("--all-audio", action="store_true")
+    finish.add_argument("--subs", choices=("auto", "copy", "convert", "none"), default=None)
+    finish.add_argument("--10bit", dest="ten_bit", action="store_true")
+    finish.add_argument("--ffmpeg-args", default=None)
+    finish.add_argument("--keep", action="store_true")
 
     assemble = subparsers.add_parser(
         "assemble",
@@ -244,6 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for key in (
         "work_dir",
         "output_dir",
+        "input_dir",
         "ffmpeg",
         "ffprobe",
         "max_work_gb",
@@ -282,6 +319,51 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tonemap=args.tonemap,
                     open_report=args.open_report,
                     dry_run=bool(getattr(args, "dry_run", False)),
+                    assume_yes=bool(getattr(args, "yes", False)),
+                ),
+                logger,
+            )
+        if args.command == "split-all":
+            from .workspace import SplitAllOptions, run_split_all
+
+            return run_split_all(
+                config,
+                SplitAllOptions(
+                    format=args.format,
+                    png_compression=args.png_compression,
+                    jpeg_quality=args.jpeg_quality,
+                    denoise=args.denoise,
+                    decode=args.decode,
+                    tonemap=args.tonemap,
+                    scale=args.scale,
+                    model=args.model,
+                    assume_yes=bool(getattr(args, "yes", False)),
+                    dry_run=bool(getattr(args, "dry_run", False)),
+                    force=bool(getattr(args, "force", False)),
+                ),
+                logger,
+            )
+        if args.command == "finish":
+            from .workspace import FinishOptions, parse_ffmpeg_args, run_finish
+
+            return run_finish(
+                config,
+                FinishOptions(
+                    all_jobs=args.all_jobs,
+                    jobs=tuple(args.jobs or ()),
+                    profile=args.profile,
+                    preset=args.preset,
+                    encoder=args.encoder,
+                    quality=args.quality,
+                    crf=args.crf,
+                    audio=args.audio,
+                    audio_bitrate=args.audio_bitrate,
+                    all_audio=args.all_audio,
+                    subs=args.subs,
+                    ten_bit=args.ten_bit,
+                    ffmpeg_args=parse_ffmpeg_args(args.ffmpeg_args),
+                    keep=args.keep,
+                    force=bool(getattr(args, "force", False)),
                     assume_yes=bool(getattr(args, "yes", False)),
                 ),
                 logger,

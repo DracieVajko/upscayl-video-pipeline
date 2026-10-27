@@ -24,6 +24,12 @@ All notable changes to this project will be documented here.
   `--seed`, `--frames`, `--model`, and `--open`. V1 only for now.
 - `--cleanup` moves the final video to `output_dir` and removes the whole
   `work/<job>` folder, so `work/` is empty after a successful run.
+- `split-all` scans `input_dir`, splits into `batch00001/in`, extracts every
+  audio track to `audio/`, creates `batch00001/out`, and writes `manifest.csv`.
+- `finish` assembles selected jobs, supports `default`/`fast`/`quality`
+  profiles, moves videos to `output_dir`, and removes the job folders.
+- `input_dir` config key and `--input-dir` override.
+- `--ffmpeg-args` for `finish` (structural flags are rejected).
 - Upscayl runs projected over one hour ask for confirmation; `--yes` skips it.
 - MKV presets fall back to a Matroska concat when MPEG-TS concat is rejected.
 - Chunk lengths below 10 seconds are clamped to 10 with a warning.
