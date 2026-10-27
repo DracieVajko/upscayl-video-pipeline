@@ -190,5 +190,8 @@ Validated on Git Bash for Windows (POSIX paths, native Windows FFmpeg/Upscayl):
   0.5 s, 5 s, and 12 s jobs, including chunking.
 - Native Linux/macOS execution of the bash implementation and macOS bash 3.2.
   Only Git Bash on Windows and `bash -n` syntax checks were run.
+- VFR Matroska duration: packet-count duration is preferred for CFR output.
+  A VFR source whose container duration differs materially from frames/fps can
+  still hit the output-duration tolerance; no VFR fixture is in the matrix.
 
 

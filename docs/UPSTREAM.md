@@ -46,3 +46,9 @@ dependencies in the core repository.
 
 Posting this comment is a public side effect. Do it only after the owner of the
 repository approves the final wording.
+
+## Posted
+
+Posted on 2026-10-27 as a top-level comment in the pinned guide:
+
+<https://github.com/upscayl/upscayl/discussions/542#discussioncomment-19209611>
