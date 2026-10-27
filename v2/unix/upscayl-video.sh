@@ -587,6 +587,7 @@ CFG_FFPROBE=""
 CFG_UPSCAYL_BIN=""
 CFG_MODELS_DIR=""
 CFG_WORK_DIR=""
+CFG_OUTPUT_DIR=""
 CFG_DEFAULT_MODEL="upscayl-standard-4x"
 CFG_DEFAULT_SCALE="2"
 CFG_DEFAULT_PRESET="mp4-h264"
@@ -609,6 +610,7 @@ config_defaults() {
     CFG_UPSCAYL_BIN="auto"
     CFG_MODELS_DIR="auto"
     CFG_WORK_DIR="work"
+    CFG_OUTPUT_DIR="output"
     CFG_DEFAULT_MODEL="upscayl-standard-4x"
     CFG_DEFAULT_SCALE="2"
     CFG_DEFAULT_PRESET="mp4-h264"
@@ -695,7 +697,7 @@ require_bool() {
 }
 
 config_load() {
-    local config_path="$1" tool_dir="$2" override_work="$3" override_ffmpeg="$4" override_ffprobe="$5"
+    local config_path="$1" tool_dir="$2" override_work="$3" override_output="$4" override_ffmpeg="$5" override_ffprobe="$6" override_max_work="${7:-}" override_min_free="${8:-}"
     local config_dir search file_value value origin base scale preset encoder audio subs tile batch gpu maxwork minfree
 
     CFG_TOOL_DIR=$(abspath "$tool_dir")
@@ -778,10 +780,12 @@ config_load() {
     CFG_GPU="$gpu"
 
     maxwork=$(require_int "$(trim "$(kv_get max_work_gb "$CFG_MAX_WORK_GB")")" max_work_gb) || exit $?
+    [ -n "$override_max_work" ] && maxwork="$override_max_work"
     [ "$maxwork" -gt 0 ] || die 4 "max_work_gb must be greater than zero"
     CFG_MAX_WORK_GB="$maxwork"
 
     minfree=$(require_int "$(trim "$(kv_get min_free_gb "$CFG_MIN_FREE_GB")")" min_free_gb) || exit $?
+    [ -n "$override_min_free" ] && minfree="$override_min_free"
     [ "$minfree" -ge 0 ] || die 4 "min_free_gb must be non-negative"
     CFG_MIN_FREE_GB="$minfree"
 
@@ -810,6 +814,14 @@ config_load() {
         value=$(kv_get work_dir "work")
         case "$value" in /*|'~'|'~/'*) ;; *) value="$config_dir/$value" ;; esac
         CFG_WORK_DIR=$(abspath "$value")
+    fi
+
+    if [ -n "$override_output" ]; then
+        CFG_OUTPUT_DIR=$(abspath "$override_output" "$PWD")
+    else
+        value=$(kv_get output_dir "output")
+        case "$value" in /*|'~'|'~/'*) ;; *) value="$config_dir/$value" ;; esac
+        CFG_OUTPUT_DIR=$(abspath "$value")
     fi
 }
 
@@ -2786,6 +2798,46 @@ resolve_output_path() {
     test_output_path "$requested" "$ext"
 }
 
+PUBLISHED_OUTPUT=""
+publish_and_purge() {
+    local job_dir="$1" output="$2"
+    local job_root output_root target name index work_root
+    [ -n "$job_dir" ] || die 4 "No job folder to purge."
+    job_root=$(abspath "$job_dir")
+    work_root=$(abspath "$CFG_WORK_DIR")
+    case "$job_root" in
+        "$work_root"/*) ;;
+        *) die 4 "Refusing to purge a folder outside the work directory: $job_dir" ;;
+    esac
+
+    target="$output"
+    case "$(abspath "$output")" in
+        "$job_root"|"$job_root"/*)
+            output_root=$(abspath "$CFG_OUTPUT_DIR")
+            case "$output_root" in
+                "$job_root"|"$job_root"/*)
+                    die 4 "output_dir must be outside the job folder: $output_root" "Point output_dir at a separate folder, for example output."
+                    ;;
+            esac
+            mkdir -p "$CFG_OUTPUT_DIR"
+            name=$(basename "$output")
+            target="$CFG_OUTPUT_DIR/$name"
+            index=1
+            while [ -e "$target" ]; do
+                target="$CFG_OUTPUT_DIR/${name%.*}_$index.${name##*.}"
+                index=$((index + 1))
+            done
+            mv "$output" "$target" || die 7 "Could not move the output to $target" "The job folder was kept."
+            log_info "Output moved: $target"
+            ;;
+    esac
+
+    PUBLISHED_OUTPUT="$target"
+    UVP_LOG_FILE=""
+    rm -rf "$job_dir"
+    log_info "Removed work folder: $job_dir"
+}
+
 clear_intermediates() {
     rm -rf "$JOB_DIR/frames" "$JOB_DIR/upscaled" "$JOB_DIR/sequence" "$JOB_DIR/chunks"
     local batch
@@ -2795,6 +2847,118 @@ clear_intermediates() {
 }
 
 OUTPUTS=()
+
+CHUNK_ASSEMBLE_OUTPUT=""
+
+assemble_chunked_job() {
+    local job_path="$1" multiple="$2" dry="$3"
+    local media duration fps chunk_seconds segments=() c idx cstart cend cframes candidate marker suffix
+    local segment expected_w expected_h audio_mode subs_mode range_start i has_copy
+    local final_output concat_name concat_path temp_output job_preset saved_name saved_container saved_ext saved_codec saved_audio saved_subs
+
+    job_load "$job_path"
+    probe_media "$(job_source_path)"
+    save_media_state
+    media="$M_SOURCE"
+    duration=$(job_get duration "$M_DURATION")
+    fps=$(job_get fps_decimal "$M_FPS_DECIMAL")
+    chunk_seconds=$(job_get chunk_seconds 0)
+    [ "$chunk_seconds" -gt 0 ] || die 4 "Chunked job has no chunk length: $(basename "$JOB_DIR")" "Resume it with the run command."
+    plan_chunks "$duration" "$fps" "$chunk_seconds"
+    [ "${#CH_INDEX[@]}" -gt 0 ] || die 4 "Chunk plan is empty: $(basename "$JOB_DIR")"
+
+    for c in "${!CH_INDEX[@]}"; do
+        idx="${CH_INDEX[$c]}"
+        candidate=""
+        for suffix in ts mov; do
+            segment="$JOB_DIR/chunks/$(printf 'chunk_%04d' "$idx").$suffix"
+            if [ -s "$segment" ]; then candidate="$segment"; break; fi
+        done
+        marker="$JOB_DIR/.done_chunk_$(printf '%04d' "$idx")"
+        if [ -z "$candidate" ] || [ ! -f "$marker" ]; then
+            die 4 "Chunk $idx is incomplete: $(basename "$JOB_DIR")" "Resume the job with the run command."
+        fi
+        segments[${#segments[@]}]="$candidate"
+    done
+    [ "${#segments[@]}" -gt 0 ] || die 4 "No chunk segments found: $JOB_DIR/chunks" "Resume the job with the run command."
+
+    saved_name="$PRESET_NAME"; saved_container="$PRESET_CONTAINER"; saved_ext="$PRESET_EXT"
+    saved_codec="$PRESET_CODEC"; saved_audio="$PRESET_AUDIO"; saved_subs="$PRESET_SUBS"
+    job_preset=$(job_get preset "$PRESET_NAME")
+    preset_resolve "$job_preset"
+    if [ "$PRESET_CODEC" != "$saved_codec" ]; then
+        die 4 "Chunked job was encoded as $PRESET_CODEC; use a matching preset instead of $saved_name."
+    fi
+    PRESET_NAME="$saved_name"; PRESET_CONTAINER="$saved_container"; PRESET_EXT="$saved_ext"
+    PRESET_CODEC="$saved_codec"; PRESET_AUDIO="$saved_audio"; PRESET_SUBS="$saved_subs"
+
+    probe_media "${segments[0]}"
+    expected_w="$M_WIDTH"; expected_h="$M_HEIGHT"
+    num_cmp "$M_DURATION" gt 0 || die 4 "Invalid chunk segment: ${segments[0]}"
+    restore_media_state
+
+    if [ -n "$EN_AUDIO" ]; then audio_mode="$EN_AUDIO"; elif [ "$CFG_DEFAULT_AUDIO" != "auto" ]; then audio_mode="$CFG_DEFAULT_AUDIO"; else audio_mode="$PRESET_AUDIO"; fi
+    if [ -n "$EN_SUBS" ]; then subs_mode="$EN_SUBS"; elif [ "$CFG_DEFAULT_SUBS" != "auto" ]; then subs_mode="$CFG_DEFAULT_SUBS"; else subs_mode="$PRESET_SUBS"; fi
+    audio_plan "$audio_mode" "$EN_AUDIO_BITRATE" "$EN_ALL_AUDIO"
+    range_start=$(job_get range_start 0)
+    if num_cmp "$range_start" gt 0; then
+        has_copy=0
+        i=0
+        while [ "$i" -lt "${#AUD_MODE[@]}" ]; do [ "${AUD_MODE[$i]}" = "copy" ] && has_copy=1; i=$((i + 1)); done
+        if [ "$has_copy" -eq 1 ]; then
+            log_warn "Trimming active: copied audio is re-encoded as AAC for a sample-accurate start."
+            i=0
+            while [ "$i" -lt "${#AUD_MODE[@]}" ]; do [ "${AUD_MODE[$i]}" = "copy" ] && AUD_MODE[$i]=aac; i=$((i + 1)); done
+        fi
+        [ "$M_CHAPTERS" -gt 0 ] && log_warn "Chapters come from the source and may not be shifted for the trimmed range."
+    fi
+    subtitle_plan "$subs_mode"
+    final_output=$(resolve_output_path "$PRESET_EXT" "$multiple") || exit $?
+    if [ "$dry" -eq 1 ]; then
+        log_info "Would assemble chunked $(basename "$JOB_DIR") (${#segments[@]} segment(s)) -> $final_output"
+        CHUNK_ASSEMBLE_OUTPUT="$final_output"
+        return 0
+    fi
+    [ -n "$EN_UPSCALED_DIR" ] && log_warn "--upscaled-dir is ignored for a chunked job."
+
+    temp_output="$(dirname "$final_output")/$(basename "$final_output" | sed 's/\.[^.]*$//').partial.${final_output##*.}"
+    PARTIAL_PATH="$temp_output"
+    mkdir -p "$(dirname "$final_output")" || die 1 "Could not create $(dirname "$final_output")"
+    job_clear_stage assemble
+    if [ "${segments[0]##*.}" = "mov" ]; then concat_name="concat.mov"; else concat_name="concat.ts"; fi
+    concat_path="$JOB_DIR/chunks/$concat_name"
+    concat_segments "$concat_path" "${segments[@]}"
+    build_mux_command "$CONCAT_OUTPUT" "$temp_output" "$duration"
+    CMD[0]="$CFG_FFMPEG"
+    log_debug "\$ $(display_command "${CMD[@]}")"
+    run_child "${CMD[@]}"
+    if [ "$LAST_RC" -ne 0 ]; then
+        local detail
+        detail=$(child_tail 50)
+        cleanup_temp_files
+        die 7 "Could not mux the final output" "$detail"
+    fi
+    cleanup_temp_files
+    repair_color_tags "$temp_output" "$PRESET_CONTAINER"
+    validate_output "$temp_output" "$expected_w" "$expected_h" "$AUD_ENABLED" "${#SUB_MODE[@]}"
+    mv -f "$temp_output" "$final_output" || die 1 "Could not write $final_output"
+    PARTIAL_PATH=""
+    [ "$EN_KEEP_CHUNKS" -eq 1 ] || rm -rf "$JOB_DIR/chunks"
+    job_set preset "$PRESET_NAME"
+    job_set encoder "$EN_ENCODER"
+    job_set audio "$audio_mode"
+    job_set subs "$subs_mode"
+    job_set last_error ""
+    job_save
+    job_mark assemble
+    if [ "$EN_CLEANUP" -eq 1 ]; then
+        publish_and_purge "$JOB_DIR" "$final_output"
+        final_output="$PUBLISHED_OUTPUT"
+        UVP_LOG_FILE=""
+    fi
+    CHUNK_ASSEMBLE_OUTPUT="$final_output"
+    return 0
+}
 
 run_assemble() {
     local dry_run="$1"; shift
@@ -2823,7 +2987,9 @@ run_assemble() {
             die 4 "Source changed since the job was created: $(job_source_path)" "Use --force only if the existing upscaled frames still match the source."
         fi
         if job_has_chunks; then
-            die 4 "Job is chunked: $(basename "$JOB_DIR")" "Resume it with the run command."
+            assemble_chunked_job "$JOB_DIR" "$multiple" "$dry_run"
+            OUTPUTS[${#OUTPUTS[@]}]="$CHUNK_ASSEMBLE_OUTPUT"
+            continue
         fi
         probe_media "$(job_source_path)"
         local upscaled_dir
@@ -2922,7 +3088,11 @@ run_assemble() {
         job_set last_error ""
         job_save
         job_mark assemble
-        [ "$EN_CLEANUP" -eq 1 ] && clear_intermediates
+        if [ "$EN_CLEANUP" -eq 1 ]; then
+            publish_and_purge "$JOB_DIR" "$final_output"
+            final_output="$PUBLISHED_OUTPUT"
+            UVP_LOG_FILE=""
+        fi
         OUTPUTS[${#OUTPUTS[@]}]="$final_output"
     done
 }
@@ -2988,6 +3158,7 @@ EOF
 resolve_upscayl_paths() {
     resolve_upscayl_binary
     resolve_models_directory
+    [ "$(basename "$MODELS_DIR_PATH")" = "models" ] || die 3 "Upscayl model directory must be named 'models': $MODELS_DIR_PATH" "Rename the folder or create a folder named models containing matching .param/.bin files."
     list_models
 }
 
@@ -3069,7 +3240,7 @@ EOF
 UPSCALED_COUNT=0
 
 upscale_frames() {
-    local model="$1" scale="$2" output_dir="$3" tile="$4" batch_size="$5" gpu="$6" icd="$7" threads="$8" retry="$9" source_dir="${10:-}" total="${11:-}" progress_total="${12:-}" progress_done="${13:-0}"
+    local model="$1" scale="$2" output_dir="$3" tile="$4" batch_size="$5" gpu="$6" icd="$7" threads="$8" retry="$9" source_dir="${10:-}" total="${11:-}" progress_total="${12:-}" progress_done="${13:-0}" assume_yes="${14:-1}"
     [ -n "$source_dir" ] || source_dir="$JOB_DIR/frames"
     [ -n "$total" ] || total=$(job_get frame_count 0)
     [ "$total" -gt 0 ] || die 4 "Job has no frame_count: $(basename "$JOB_DIR")"
@@ -3172,12 +3343,26 @@ upscale_frames() {
         eta=$(awk -v d="$done_count" -v t="$display_total" -v e="$elapsed" 'BEGIN { r = d / e; if (r <= 0) print 0; else printf "%.0f", (t - d) / r }')
         percent=$(awk -v d="$done_count" -v t="$display_total" 'BEGIN { printf "%.1f", (t > 0) ? d / t * 100 : 100 }')
         log_info "upscale: $done_count/$display_total (${percent}%) ${rate}/s ETA $(format_duration "$eta" | cut -d. -f1)"
-        if [ "$eta_warned" -eq 0 ] && [ "$eta" -gt 43200 ]; then
+        if [ "$eta_warned" -eq 0 ] && [ "$eta" -gt 3600 ]; then
             eta_warned=1
-            log_warn "Estimated upscale time exceeds 12 hours; use a faster model (upscayl-lite-4x) or process the video in chunks."
-        elif [ "$eta_warned" -eq 0 ] && [ "$eta" -gt 3600 ]; then
-            eta_warned=1
-            log_warn "Estimated upscale time is $(awk -v e="$eta" 'BEGIN { printf "%.1f", e / 3600 }') hours."
+            local eta_hours
+            eta_hours=$(awk -v e="$eta" 'BEGIN { printf "%.1f", e / 3600 }')
+            if [ "$eta" -gt 43200 ]; then
+                log_warn "Estimated upscale time exceeds 12 hours; use a faster model (upscayl-lite-4x) or process the video in chunks."
+            else
+                log_warn "Estimated upscale time is ${eta_hours} hours."
+            fi
+            if [ "$assume_yes" -ne 1 ]; then
+                if [ -t 0 ]; then
+                    local answer
+                    printf 'Continue? [y/N] ' >&2
+                    IFS= read -r answer || answer=""
+                    answer=$(lower "$(trim "$answer")")
+                    case "$answer" in y|yes) ;; *) die 4 "Aborted by user." ;; esac
+                else
+                    die 4 "Estimated upscale time is ${eta_hours} hours." "Re-run with --yes to continue."
+                fi
+            fi
         fi
     done
     local count_map
@@ -3187,7 +3372,7 @@ upscale_frames() {
     rm -f "$count_map"
 }
 
-US_MODEL=""; US_SCALE=2; US_GPU=0; US_TILE="auto"; US_BATCH=0; US_THREADS="1:2:2"
+US_MODEL=""; US_SCALE=2; US_GPU=0; US_TILE="auto"; US_BATCH=0; US_THREADS="1:2:2"; US_ASSUME_YES=1
 US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
 
 run_upscale() {
@@ -3238,7 +3423,7 @@ run_upscale() {
             log_info "Would upscale $(basename "$JOB_DIR"): $frame_count frames with $US_MODEL at ${US_SCALE}x, tile $tile, batch $batch_size"
             continue
         fi
-        upscale_frames "$US_MODEL" "$US_SCALE" "$output_dir" "$tile" "$batch_size" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "" ""
+        upscale_frames "$US_MODEL" "$US_SCALE" "$output_dir" "$tile" "$batch_size" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "" "" "" "0" "$US_ASSUME_YES"
         job_set model "$US_MODEL"
         job_set scale "$US_SCALE"
         job_set tile "$tile"
@@ -3301,20 +3486,37 @@ write_concat_list() {
     write_text_atomic "$output" "$text"
 }
 
+CONCAT_OUTPUT=""
+
 concat_segments() {
     local output="$1"; shift
-    local segments=("$@") list
+    local segments=("$@") list first_detail fallback fallback_list
     list="${output%.*}.txt"
     write_concat_list "$list" "${segments[@]}"
     CMD=("$CFG_FFMPEG" -hide_banner -nostdin -y -f concat -safe 0 -i "$list" -c copy -fflags +genpts "$output")
     log_debug "\$ $(display_command "${CMD[@]}")"
     run_child "${CMD[@]}"
-    if [ "$LAST_RC" -ne 0 ]; then
-        local detail
-        detail=$(child_tail 50)
+    if [ "$LAST_RC" -eq 0 ]; then
+        CONCAT_OUTPUT="$output"
         cleanup_temp_files
-        die 7 "Could not concatenate chunk segments." "$detail"
+        return 0
     fi
+    first_detail=$(child_tail 50)
+    fallback="${output%.*}.mkv"
+    fallback_list="${fallback%.*}.txt"
+    write_concat_list "$fallback_list" "${segments[@]}"
+    CMD=("$CFG_FFMPEG" -hide_banner -nostdin -y -f concat -safe 0 -i "$fallback_list" -c copy -fflags +genpts "$fallback")
+    log_debug "\$ $(display_command "${CMD[@]}")"
+    run_child "${CMD[@]}"
+    if [ "$LAST_RC" -ne 0 ]; then
+        local second_detail
+        second_detail=$(child_tail 50)
+        cleanup_temp_files
+        die 7 "Could not concatenate chunk segments." "$first_detail
+Matroska fallback: $second_detail"
+    fi
+    CONCAT_OUTPUT="$fallback"
+    log_warn "Chunk concatenation failed in ${output##*.}; used Matroska fallback: $fallback"
     cleanup_temp_files
 }
 
@@ -3420,7 +3622,7 @@ run_chunked() {
         [ "$LAST_RC" -eq 0 ] || { local detail; detail=$(child_tail 50); cleanup_temp_files; die 7 "Chunk $idx extraction failed" "$detail"; }
         cleanup_temp_files
         validate_frame_set "$frames_dir" "$cframes" error 0
-        upscale_frames "$US_MODEL" "$US_SCALE" "$upscaled_dir" "$tile" "$(resolve_batch_size "$US_BATCH" $(( $(job_get width 1920) * scale )) $(( $(job_get height 1080) * scale )))" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "$frames_dir" "$cframes" "$total_frames" "$frames_done"
+        upscale_frames "$US_MODEL" "$US_SCALE" "$upscaled_dir" "$tile" "$(resolve_batch_size "$US_BATCH" $(( $(job_get width 1920) * scale )) $(( $(job_get height 1080) * scale )))" "$US_GPU" "$icd" "$US_THREADS" "$US_RETRY" "$frames_dir" "$cframes" "$total_frames" "$frames_done" "$US_ASSUME_YES"
         validate_frame_set "$upscaled_dir" "$cframes" error 0
         local dims frame_w frame_h
         dims=$(probe_frame_dimensions "${FS_PATHS[0]}") || exit $?
@@ -3459,7 +3661,7 @@ run_chunked() {
     local concat_output
     [ "$PRESET_CODEC" = "prores" ] && concat_output="$chunks_dir/concat.mov" || concat_output="$chunks_dir/concat.ts"
     concat_segments "$concat_output" "${segments[@]}"
-    build_mux_command "$concat_output" "$PARTIAL_PATH" "$duration"
+    build_mux_command "$CONCAT_OUTPUT" "$PARTIAL_PATH" "$duration"
     CMD[0]="$CFG_FFMPEG"
     log_debug "\$ $(display_command "${CMD[@]}")"
     run_child "${CMD[@]}"
@@ -3477,7 +3679,11 @@ run_chunked() {
     job_set last_error ""
     job_save
     job_mark assemble
-    [ "$RUN_CLEANUP" -eq 1 ] && clear_intermediates
+    if [ "$RUN_CLEANUP" -eq 1 ]; then
+        publish_and_purge "$JOB_DIR" "$final_output"
+        final_output="$PUBLISHED_OUTPUT"
+        UVP_LOG_FILE=""
+    fi
     CHUNK_OUTPUT="$final_output"
 }
 
@@ -3501,16 +3707,53 @@ run_one_input() {
     t3=$(date +%s)
     log_debug "stage timings: split=$((t1 - t0))s upscale=$((t2 - t1))s assemble=$((t3 - t2))s"
     output="${OUTPUTS[0]}"
-    if [ "$RUN_CLEANUP" -eq 1 ]; then
-        CLEAN_ALL_INTERMEDIATES=1; CLEAN_FRAMES=0; CLEAN_UPSCALED=0; CLEAN_CHUNKS=0; CLEAN_BATCH=0; CLEAN_OUTPUT=0
-        run_clean 0 "$job"
-    fi
     write_text_atomic "$result_file" "job=$job
 output=$output
 "
 }
 
+AUTO_CHUNK_SECONDS=0
+
+auto_chunk_seconds() {
+    local input="$1" source start end duration fps frames scale sample free cap floor
+    source=$(abspath "$input")
+    probe_media "$source"
+    num_cmp "$M_DURATION" gt 0 || { AUTO_CHUNK_SECONDS=0; return 0; }
+    start=0
+    if [ -n "$SP_START" ]; then start=$(parse_time_value "$SP_START") || exit $?; fi
+    if [ -n "$SP_END" ]; then end=$(parse_time_value "$SP_END") || exit $?; else end="$M_DURATION"; fi
+    if num_cmp "$end" gt "$M_DURATION"; then end="$M_DURATION"; fi
+    duration=$(fcalc "$end" '-' "$start" '%.6f')
+    num_cmp "$duration" gt 0 || { AUTO_CHUNK_SECONDS=0; return 0; }
+    find_or_create_job "$CFG_WORK_DIR" "$source" 0
+    if job_has_chunks; then
+        local stored
+        stored=$(job_get chunk_seconds 0)
+        [ "$stored" -gt 0 ] || stored=60
+        AUTO_CHUNK_SECONDS="$stored"
+        return 0
+    fi
+    if test_has_frames; then AUTO_CHUNK_SECONDS=0; return 0; fi
+    resolve_scale
+    scale="$SCALE_CHOSEN"
+    fps="$M_FPS_DECIMAL"
+    frames=$(round_even "$(fcalc "$duration" '*' "$fps" '%.9f')")
+    sample=$(sample_frame_bytes "$(job_source_path)" "$start" "$duration" "$SP_FORMAT" "$SP_DENOISE" "$SP_TONEMAP" "$SP_DECODE") || exit $?
+    disk_estimate "$sample" "$frames" "$scale"
+    free=$(free_bytes "$CFG_WORK_DIR")
+    log_info "Auto-chunk estimate: $(format_duration "$duration"), $frames frames, estimated $(format_bytes "$EST_TOTAL_BYTES"), free $(format_bytes "$free")"
+    cap=$((CFG_MAX_WORK_GB * 1073741824))
+    floor=$((CFG_MIN_FREE_GB * 1073741824))
+    if [ "$EST_TOTAL_BYTES" -gt "$cap" ] || [ $((free - EST_TOTAL_BYTES)) -lt "$floor" ]; then
+        log_info "Automatic chunking enabled; using 60s chunks."
+        AUTO_CHUNK_SECONDS=60
+    else
+        AUTO_CHUNK_SECONDS=0
+    fi
+}
+
 run_all() {
+    local dry_run="$1"; shift
     local inputs
     inputs=("$@")
     local input result_file err_file err_text rc chunk_value output_text status name
@@ -3524,32 +3767,80 @@ run_all() {
                  fi ;;
         esac
     fi
+    if [ "$dry_run" -eq 1 ]; then
+        preset_resolve "$EN_PRESET"
+        local dry_results=()
+        for input in "${inputs[@]}"; do
+            run_split 0 "${OPT_YES:-0}" 1 "$input"
+            local duration fps frames scale chunk_seconds chunks output
+            duration=$(job_get duration 0)
+            fps=$(job_get fps_decimal 0)
+            frames=$(round_even "$(fcalc "$duration" '*' "$fps" '%.9f')")
+            scale=$(job_get scale 0)
+            [ "$scale" -gt 0 ] || scale="$US_SCALE"
+            chunk_value=$(lower "$(trim "$RUN_CHUNK_SECONDS")")
+            if [ "$chunk_value" != "0" ] && [ "$chunk_value" != "auto" ]; then
+                case "$chunk_value" in *[!0-9]*) die 4 "Invalid --chunk-seconds: $chunk_value" ;; esac
+                chunk_seconds="$chunk_value"
+                [ "$chunk_seconds" -ge 10 ] || chunk_seconds=10
+                plan_chunks "$duration" "$fps" "$chunk_seconds"
+                log_info "Would process $frames frames in ${#CH_INDEX[@]} chunks of ${chunk_seconds}s"
+            elif [ "$chunk_value" = "auto" ]; then
+                log_info "Would decide automatic chunking for $frames frames from the disk estimate"
+            fi
+            log_info "Would upscale $frames frames with $US_MODEL at ${scale}x"
+            output=$(default_output_path "$PRESET_EXT")
+            log_info "Would assemble -> $output"
+            dry_results[${#dry_results[@]}]="DRY|$input|-"
+        done
+        if [ "$UVP_QUIET" -eq 0 ]; then
+            printf '%-32s %-8s %s\n' "INPUT" "STATUS" "OUTPUT"
+            local entry
+            for entry in "${dry_results[@]}"; do
+                local d_status="${entry%%|*}"
+                local rest="${entry#*|}"
+                local d_input="${rest%%|*}"
+                local d_name
+                d_name=$(basename "$d_input")
+                printf '%-32s %-8s %s\n' "${d_name:0:32}" "$d_status" "-"
+            done
+        fi
+        return 0
+    fi
     RUN_FAILED=0; RUN_RESULTS=()
     for input in "${inputs[@]}"; do
         JOB_DIR=""
         result_file=$(new_temp_file)
         err_file=$(new_temp_file)
         chunk_value=$(lower "$(trim "$RUN_CHUNK_SECONDS")")
-        case "$chunk_value" in
-            0|auto)
-                (
-                    UVP_ERROR_FILE="$err_file"
-                    run_one_input "$input" "$result_file"
-                )
-                rc=$?
-                ;;
-            *)
-                case "$chunk_value" in *[!0-9]*) die 4 "Invalid --chunk-seconds: $chunk_value" ;; esac
-                (
-                    UVP_ERROR_FILE="$err_file"
-                    run_chunked "$input" "$chunk_value"
-                    write_text_atomic "$result_file" "job=$JOB_DIR
+        chunk_seconds=0
+        if [ "$chunk_value" = "auto" ]; then
+            auto_chunk_seconds "$input"
+            chunk_seconds="$AUTO_CHUNK_SECONDS"
+        elif [ "$chunk_value" != "0" ]; then
+            case "$chunk_value" in *[!0-9]*) die 4 "Invalid --chunk-seconds: $chunk_value" ;; esac
+            chunk_seconds="$chunk_value"
+            if [ "$chunk_seconds" -lt 10 ]; then
+                log_warn "--chunk-seconds $chunk_seconds is below the minimum; using 10 seconds."
+                chunk_seconds=10
+            fi
+        fi
+        if [ "$chunk_seconds" -gt 0 ]; then
+            (
+                UVP_ERROR_FILE="$err_file"
+                run_chunked "$input" "$chunk_seconds"
+                write_text_atomic "$result_file" "job=$JOB_DIR
 output=$CHUNK_OUTPUT
 "
-                )
-                rc=$?
-                ;;
-        esac
+            )
+            rc=$?
+        else
+            (
+                UVP_ERROR_FILE="$err_file"
+                run_one_input "$input" "$result_file"
+            )
+            rc=$?
+        fi
         if [ "$rc" -eq 0 ]; then
             output_text=$(sed -n 's/^output=//p' "$result_file" | head -n 1)
             RUN_RESULTS[${#RUN_RESULTS[@]}]="OK|$input|$output_text"
@@ -3856,22 +4147,173 @@ ask_value() {
     [ -n "$answer" ] && printf '%s' "$answer" || printf '%s' "$default"
 }
 
+MENU_MODEL_NAMES=()
+MENU_MODEL_DIRS=()
+SELECTED_MODEL=""
+SELECTED_MODEL_DIR=""
+SELECTED_JOBS=()
+
+menu_add_models() {
+    local directory="$1" param name
+    [ -d "$directory" ] || return 0
+    for param in "$directory"/*.param; do
+        [ -f "$param" ] || continue
+        name=${param##*/}
+        name=${name%.param}
+        [ -f "$directory/$name.bin" ] || continue
+        if ! array_contains "$name" "${MENU_MODEL_NAMES[@]}"; then
+            MENU_MODEL_NAMES[${#MENU_MODEL_NAMES[@]}]="$name"
+            MENU_MODEL_DIRS[${#MENU_MODEL_DIRS[@]}]="$directory"
+        fi
+    done
+}
+
+select_model() {
+    MENU_MODEL_NAMES=(); MENU_MODEL_DIRS=()
+    local discovery bin models
+    discovery=$( (resolve_upscayl_paths; printf '%s\n' "$UPSCAYL_BIN_PATH"; printf '%s\n' "$MODELS_DIR_PATH") 2>/dev/null )
+    if [ $? -eq 0 ]; then
+        bin=$(printf '%s\n' "$discovery" | sed -n '1p')
+        models=$(printf '%s\n' "$discovery" | sed -n '2p')
+        [ -n "$models" ] && menu_add_models "$models"
+        [ -n "$bin" ] && menu_add_models "$(dirname "$(dirname "$bin")")/models"
+    fi
+    [ -n "$CFG_MODELS_DIR" ] && menu_add_models "$CFG_MODELS_DIR"
+    if [ "${#MENU_MODEL_NAMES[@]}" -eq 0 ]; then
+        SELECTED_MODEL=$(ask_value "Model" "$CFG_DEFAULT_MODEL")
+        SELECTED_MODEL_DIR=""
+        return 0
+    fi
+    printf 'Models:\n'
+    local i name hint
+    i=0
+    while [ "$i" -lt "${#MENU_MODEL_NAMES[@]}" ]; do
+        name="${MENU_MODEL_NAMES[$i]}"
+        case "$name" in
+            upscayl-standard-4x) hint="general-purpose default" ;;
+            upscayl-lite-4x) hint="fastest, good for long videos" ;;
+            remacri-4x) hint="live-action detail" ;;
+            ultramix-balanced-4x) hint="balanced live-action" ;;
+            ultrasharp-4x) hint="sharp; may over-sharpen compressed sources" ;;
+            high-fidelity-4x) hint="conservative, less hallucination" ;;
+            digital-art-4x) hint="anime and illustrations" ;;
+            *) hint="custom" ;;
+        esac
+        printf '  %s) %s - %s\n     %s\n' "$((i + 1))" "$name" "$hint" "${MENU_MODEL_DIRS[$i]}"
+        i=$((i + 1))
+    done
+    local default_name="$CFG_DEFAULT_MODEL" answer number
+    array_contains "$default_name" "${MENU_MODEL_NAMES[@]}" || default_name="${MENU_MODEL_NAMES[0]}"
+    answer=$(ask_value "Model number or name" "$default_name")
+    case "$answer" in
+        *[!0-9]*|'') ;;
+        *)
+            number="$answer"
+            if [ "$number" -ge 1 ] && [ "$number" -le "${#MENU_MODEL_NAMES[@]}" ]; then
+                SELECTED_MODEL="${MENU_MODEL_NAMES[$((number - 1))]}"
+                SELECTED_MODEL_DIR="${MENU_MODEL_DIRS[$((number - 1))]}"
+                return 0
+            fi
+            ;;
+    esac
+    i=0
+    while [ "$i" -lt "${#MENU_MODEL_NAMES[@]}" ]; do
+        if [ "${MENU_MODEL_NAMES[$i]}" = "$answer" ]; then
+            SELECTED_MODEL="$answer"
+            SELECTED_MODEL_DIR="${MENU_MODEL_DIRS[$i]}"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    SELECTED_MODEL="$answer"
+    SELECTED_MODEL_DIR=""
+}
+
+select_jobs() {
+    SELECTED_JOBS=()
+    local target path answer number jobs job_path
+    target=$(ask_value "Job folder or work dir" "")
+    [ -n "$target" ] || return 0
+    path=$(abspath "$target")
+    if [ -f "$path/job.txt" ]; then
+        SELECTED_JOBS[${#SELECTED_JOBS[@]}]="$path"
+        return 0
+    fi
+    jobs=$(find_jobs "$path")
+    if [ -z "$jobs" ]; then
+        printf 'No jobs found in: %s\n' "$path"
+        return 0
+    fi
+    printf 'Jobs:\n'
+    number=0
+    while IFS= read -r job_path; do
+        [ -n "$job_path" ] || continue
+        number=$((number + 1))
+        job_load "$job_path"
+        printf '  %s) %s <- %s\n' "$number" "$(basename "$job_path")" "$(job_source_path)"
+    done <<EOF
+$jobs
+EOF
+    answer=$(ask_value "Job number or 'a' for all" "a")
+    answer=$(lower "$answer")
+    case "$answer" in
+        a|all)
+            while IFS= read -r job_path; do
+                [ -n "$job_path" ] && SELECTED_JOBS[${#SELECTED_JOBS[@]}]="$job_path"
+            done <<EOF
+$jobs
+EOF
+            ;;
+        *[!0-9]*|'') printf 'Invalid job selection.\n' ;;
+        *)
+            number="$answer"
+            if [ "$number" -ge 1 ]; then
+                number=0
+                while IFS= read -r job_path; do
+                    [ -n "$job_path" ] || continue
+                    number=$((number + 1))
+                    if [ "$number" -eq "$answer" ]; then
+                        SELECTED_JOBS[${#SELECTED_JOBS[@]}]="$job_path"
+                        break
+                    fi
+                done <<EOF
+$jobs
+EOF
+            fi
+            ;;
+    esac
+}
+
 menu_run_all() {
-    local target model preset audio subs cleanup scale track
+    local target model preset audio subs cleanup scale track tonemap=0 cleanup_default
     target=$(ask_value "Video file or folder" "")
     [ -n "$target" ] || return 0
-    model=$(ask_value "Model" "$CFG_DEFAULT_MODEL")
+    resolve_inputs 0 "$target"
+    probe_media "${INPUT_PATHS[0]}"
+    if [ "$M_HDR" -eq 1 ]; then
+        local hdr_answer
+        hdr_answer=$(ask_value "HDR source detected; tonemap to SDR BT.709? y/N" "n")
+        case "$(lower "$hdr_answer")" in
+            y|yes) tonemap=1 ;;
+            *) printf 'Aborted: HDR requires --tonemap.\n'; return 0 ;;
+        esac
+    fi
+    select_model
+    model="$SELECTED_MODEL"
+    local model_dir="$SELECTED_MODEL_DIR"
     preset=$(ask_value "Preset mp4-h264/mp4-hevc/mkv-hevc/mov-prores" "$CFG_DEFAULT_PRESET")
     case "$preset" in mp4-h264|mp4-hevc|mkv-hevc|mov-prores) ;; *) printf 'Unknown preset.\n'; return 0 ;; esac
     audio=$(ask_value "Audio auto/copy/aac/pcm/none" "auto")
     subs=$(ask_value "Subtitles auto/copy/convert/none" "auto")
-    cleanup=$(ask_value "Delete intermediates after success? y/N" "n")
+    cleanup_default=n
+    [ "$CFG_CLEANUP" = "1" ] && cleanup_default=y
+    cleanup=$(ask_value "Delete intermediates after success? y/N" "$cleanup_default")
     scale="$CFG_DEFAULT_SCALE"
     SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT="png"; SP_JPEG=1; SP_PNG=3
-    SP_DENOISE="none"; SP_TONEMAP=0; SP_DECODE="auto"; SP_SCALE="$scale"; SP_TARGET=""
+    SP_DENOISE="none"; SP_TONEMAP="$tonemap"; SP_DECODE="auto"; SP_SCALE="$scale"; SP_TARGET=""
     SP_MODEL="$model"; SP_VERIFY=0; SP_RECURSIVE=0; SP_FORCE=0
-    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0
-    US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
+    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0; US_ASSUME_YES=0
+    US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS="$model_dir"; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
     EN_PRESET="$preset"; EN_ENCODER="$CFG_DEFAULT_ENCODER"; EN_QUALITY="balanced"; EN_CRF=""
     if [ "$audio" = "auto" ]; then EN_AUDIO=""; else EN_AUDIO="$audio"; fi
     if [ "$subs" = "auto" ]; then EN_SUBS=""; else EN_SUBS="$subs"; fi
@@ -3879,8 +4321,7 @@ menu_run_all() {
     if [ "$cleanup" = "y" ] || [ "$cleanup" = "yes" ]; then EN_CLEANUP=1; else EN_CLEANUP=0; fi
     EN_OUTPUT=""; EN_UPSCALED_DIR=""; EN_PICK="error"; EN_VERIFY=0; EN_ALLOW_HUGE=0; EN_FORCE=0; EN_KEEP_CHUNKS=0
     RUN_CLEANUP="$EN_CLEANUP"; RUN_STOP_ON_ERROR=0; RUN_CHUNK_SECONDS="auto"
-    resolve_inputs 0 "$target"
-    run_all "${INPUT_PATHS[@]}" || true
+    run_all 0 "${INPUT_PATHS[@]}" || true
 }
 
 menu_split() {
@@ -3899,22 +4340,24 @@ menu_split() {
 }
 
 menu_upscale() {
-    local job model scale
-    job=$(ask_value "Job folder" "")
-    [ -n "$job" ] || return 0
-    model=$(ask_value "Model" "$CFG_DEFAULT_MODEL")
+    local model scale model_dir
+    select_jobs
+    [ "${#SELECTED_JOBS[@]}" -gt 0 ] || return 0
+    select_model
+    model="$SELECTED_MODEL"
+    model_dir="$SELECTED_MODEL_DIR"
     scale=$(ask_value "Scale 2/3/4" "$CFG_DEFAULT_SCALE")
     case "$scale" in 2|3|4) ;; *) printf 'Scale must be 2, 3, or 4.\n'; return 0 ;; esac
-    resolve_jobs 0 "$job"
-    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0
-    US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
-    run_upscale 0 "${RESOLVED_JOBS[@]}"
+    printf 'Note: upscale writes frames only; audio and subtitles are muxed by Assemble or Run all.\n'
+    US_MODEL="$model"; US_SCALE="$scale"; US_GPU=0; US_TILE="auto"; US_BATCH=0; US_ASSUME_YES=0
+    US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS="$model_dir"; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
+    run_upscale 0 "${SELECTED_JOBS[@]}"
 }
 
 menu_assemble() {
-    local job preset encoder audio subs
-    job=$(ask_value "Job folder" "")
-    [ -n "$job" ] || return 0
+    local preset encoder audio subs
+    select_jobs
+    [ "${#SELECTED_JOBS[@]}" -gt 0 ] || return 0
     preset=$(ask_value "Preset mp4-h264/mp4-hevc/mkv-hevc/mov-prores" "$CFG_DEFAULT_PRESET")
     case "$preset" in mp4-h264|mp4-hevc|mkv-hevc|mov-prores) ;; *) printf 'Unknown preset.\n'; return 0 ;; esac
     encoder=$(ask_value "Encoder auto/nvidia/amd/cpu" "$CFG_DEFAULT_ENCODER")
@@ -3926,8 +4369,7 @@ menu_assemble() {
     if [ "$subs" = "auto" ]; then EN_SUBS=""; else EN_SUBS="$subs"; fi
     EN_AUDIO_BITRATE=192; EN_ALL_AUDIO=0; EN_TENBIT=0; EN_TARGET=""; EN_CLEANUP=0
     EN_OUTPUT=""; EN_UPSCALED_DIR=""; EN_PICK="error"; EN_VERIFY=0; EN_ALLOW_HUGE=0; EN_FORCE=0; EN_KEEP_CHUNKS=0
-    resolve_jobs 0 "$job"
-    run_assemble 0 "${RESOLVED_JOBS[@]}"
+    run_assemble 0 "${SELECTED_JOBS[@]}"
 }
 
 run_menu() {
@@ -4005,6 +4447,22 @@ EOF
     seen=$(new_temp_file)
     for raw in "${args[@]}"; do
         resolved=$(abspath "$raw")
+        if [ -d "$resolved" ] && [ ! -f "$resolved/job.txt" ]; then
+            local nested nested_job
+            nested=$(find_jobs "$resolved")
+            if [ -n "$nested" ]; then
+                while IFS= read -r nested_job; do
+                    [ -n "$nested_job" ] || continue
+                    if ! grep -Fxq "$nested_job" "$seen"; then
+                        printf '%s\n' "$nested_job" >> "$seen"
+                        RESOLVED_JOBS[${#RESOLVED_JOBS[@]}]="$nested_job"
+                    fi
+                done <<EOF
+$nested
+EOF
+                continue
+            fi
+        fi
         job_load "$resolved"
         resolved="$JOB_DIR"
         if ! grep -Fxq "$resolved" "$seen"; then
@@ -4040,14 +4498,15 @@ show_help() {
 }
 
 reset_options() {
-    OPT_WORK_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""
+    OPT_WORK_DIR=""; OPT_OUTPUT_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""
     OPT_FFPROBE=""; OPT_VERBOSE=0; OPT_QUIET=0; OPT_YES=0; OPT_FORCE=0; OPT_DRY_RUN=0
+    OPT_MAX_WORK=""; OPT_MIN_FREE=""
     SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT="png"; SP_JPEG=1; SP_PNG=3
     SP_DENOISE="none"; SP_TONEMAP=0; SP_DECODE="auto"; SP_SCALE=""; SP_TARGET=""
     SP_MODEL=""; SP_VERIFY=0; SP_RECURSIVE=0; SP_FORCE=0
-    US_MODEL=""; US_SCALE=""; US_GPU=""; US_TILE=""; US_BATCH=""; US_THREADS="1:2:2"
+    US_MODEL=""; US_SCALE=""; US_GPU=""; US_TILE=""; US_BATCH=""; US_THREADS="1:2:2"; US_ASSUME_YES=1
     US_ICD=""; US_BIN=""; US_MODELS=""; US_UPSCALED_DIR=""; US_RETRY=1; US_FORCE=0
-    EN_PRESET=""; EN_ENCODER=""; EN_QUALITY="balanced"; EN_CRF=""
+    EN_PRESET=""; EN_ENCODER=""; EN_QUALITY="balanced"; EN_QUALITY_SET=0; EN_CRF=""; EN_CRF_SET=0
     EN_AUDIO=""; EN_AUDIO_BITRATE=192; EN_ALL_AUDIO=0; EN_SUBS=""; EN_TENBIT=0
     EN_TARGET=""; EN_CLEANUP=0; EN_OUTPUT=""; EN_UPSCALED_DIR=""; EN_PICK="error"
     EN_VERIFY=0; EN_ALLOW_HUGE=0; EN_FORCE=0; EN_KEEP_CHUNKS=0
@@ -4081,6 +4540,7 @@ parse_options() {
         esac
         case "$token" in
             --work-dir) need_value "$token" "$#"; OPT_WORK_DIR="$2"; shift 2 ;;
+            --output-dir) need_value "$token" "$#"; OPT_OUTPUT_DIR="$2"; shift 2 ;;
             --config) need_value "$token" "$#"; OPT_CONFIG="$2"; shift 2 ;;
             --ffmpeg) need_value "$token" "$#"; OPT_FFMPEG="$2"; shift 2 ;;
             --ffprobe) need_value "$token" "$#"; OPT_FFPROBE="$2"; shift 2 ;;
@@ -4089,6 +4549,8 @@ parse_options() {
             --yes) OPT_YES=1; shift ;;
             --force) OPT_FORCE=1; shift ;;
             --dry-run) OPT_DRY_RUN=1; shift ;;
+            --max-work-gb) need_value "$token" "$#"; OPT_MAX_WORK=$(require_int "$2" max-work-gb) || exit $?; shift 2 ;;
+            --min-free-gb) need_value "$token" "$#"; OPT_MIN_FREE=$(require_int "$2" min-free-gb) || exit $?; shift 2 ;;
             -h|--help) show_help; exit 0 ;;
             --version) printf '%s %s\n' "$UVP_PROGRAM" "$UVP_VERSION"; exit 0 ;;
             --)
@@ -4112,8 +4574,8 @@ parse_options() {
             --all) ALL_JOBS=1; ASSEMBLE_ALL=1; shift ;;
             --preset) need_value "$token" "$#"; EN_PRESET="$2"; case "$EN_PRESET" in mp4-h264|mp4-hevc|mkv-hevc|mov-prores) ;; *) die 2 "argument --preset: invalid choice: '$EN_PRESET'" ;; esac; shift 2 ;;
             --encoder) need_value "$token" "$#"; EN_ENCODER="$2"; case "$EN_ENCODER" in auto|nvidia|amd|cpu) ;; *) die 2 "argument --encoder: invalid choice: '$EN_ENCODER'" ;; esac; shift 2 ;;
-            --quality) need_value "$token" "$#"; EN_QUALITY="$2"; case "$EN_QUALITY" in fast|balanced|quality) ;; *) die 2 "argument --quality: invalid choice: '$EN_QUALITY'" ;; esac; shift 2 ;;
-            --crf) need_value "$token" "$#"; EN_CRF=$(require_int "$2" crf) || exit $?; shift 2 ;;
+            --quality) need_value "$token" "$#"; EN_QUALITY="$2"; EN_QUALITY_SET=1; case "$EN_QUALITY" in fast|balanced|quality) ;; *) die 2 "argument --quality: invalid choice: '$EN_QUALITY'" ;; esac; shift 2 ;;
+            --crf) need_value "$token" "$#"; EN_CRF=$(require_int "$2" crf) || exit $?; EN_CRF_SET=1; shift 2 ;;
             --audio) need_value "$token" "$#"; EN_AUDIO="$2"; case "$EN_AUDIO" in auto|copy|aac|pcm|none) ;; *) die 2 "argument --audio: invalid choice: '$EN_AUDIO'" ;; esac; shift 2 ;;
             --audio-bitrate) need_value "$token" "$#"; EN_AUDIO_BITRATE=$(require_int "$2" audio-bitrate) || exit $?; shift 2 ;;
             --all-audio) EN_ALL_AUDIO=1; shift ;;
@@ -4159,6 +4621,7 @@ apply_config_defaults() {
     [ -n "$US_TILE" ] || US_TILE="$CFG_TILE"
     [ -n "$US_BATCH" ] || US_BATCH="$CFG_BATCH_SIZE"
     SP_FORCE="$OPT_FORCE"; US_FORCE="$OPT_FORCE"; EN_FORCE="$OPT_FORCE"
+    US_ASSUME_YES="$OPT_YES"
 }
 
 main() {
@@ -4168,7 +4631,7 @@ main() {
     local i=0 token command="" prefix=() rest=()
     if [ "${#args[@]}" -eq 0 ]; then
         if [ ! -t 0 ]; then show_help; exit 2; fi
-        config_load "" "$UVP_TOOL_DIR" "" "" ""
+        config_load "" "$UVP_TOOL_DIR" "" "" "" ""
         run_menu
         exit $?
     fi
@@ -4177,7 +4640,7 @@ main() {
         case "$token" in
             --version) printf '%s %s\n' "$UVP_PROGRAM" "$UVP_VERSION"; exit 0 ;;
             -h|--help) show_help; exit 0 ;;
-            --work-dir|--config|--ffmpeg|--ffprobe)
+            --work-dir|--config|--ffmpeg|--ffprobe|--max-work-gb|--min-free-gb)
                 [ $((i + 1)) -lt "${#args[@]}" ] || die 2 "argument $token: expected one argument"
                 prefix[${#prefix[@]}]="$token"; prefix[${#prefix[@]}]="${args[$((i + 1))]}"
                 i=$((i + 2))
@@ -4186,7 +4649,7 @@ main() {
                 prefix[${#prefix[@]}]="$token"
                 i=$((i + 1))
                 ;;
-            --work-dir=*|--config=*|--ffmpeg=*|--ffprobe=*)
+            --work-dir=*|--config=*|--ffmpeg=*|--ffprobe=*|--max-work-gb=*|--min-free-gb=*)
                 prefix[${#prefix[@]}]="$token"
                 i=$((i + 1))
                 ;;
@@ -4219,9 +4682,12 @@ main() {
             ;;
     esac
 
+    if [ "$EN_QUALITY_SET" -eq 1 ] && [ "$EN_CRF_SET" -eq 1 ]; then
+        die 4 "--quality and --crf are mutually exclusive."
+    fi
     [ "$OPT_VERBOSE" -eq 1 ] && UVP_VERBOSE=1
     [ "$OPT_QUIET" -eq 1 ] && UVP_QUIET=1
-    config_load "$OPT_CONFIG" "$UVP_TOOL_DIR" "$OPT_WORK_DIR" "$OPT_FFMPEG" "$OPT_FFPROBE"
+    config_load "$OPT_CONFIG" "$UVP_TOOL_DIR" "$OPT_WORK_DIR" "$OPT_OUTPUT_DIR" "$OPT_FFMPEG" "$OPT_FFPROBE" "$OPT_MAX_WORK" "$OPT_MIN_FREE"
     apply_config_defaults
 
     local dry="$OPT_DRY_RUN" yes="$OPT_YES" rc
@@ -4245,8 +4711,12 @@ main() {
             exit 0
             ;;
         run)
+            if [ "$RUN_CLEANUP" -eq 0 ] && [ "$CFG_CLEANUP" = "1" ]; then
+                RUN_CLEANUP=1
+            fi
+            EN_CLEANUP="$RUN_CLEANUP"
             resolve_inputs "$SP_RECURSIVE" "${POSITIONALS[@]}"
-            if run_all "${INPUT_PATHS[@]}"; then exit 0; else exit "${RUN_EXIT_CODE:-1}"; fi
+            if run_all "$dry" "${INPUT_PATHS[@]}"; then exit 0; else exit "${RUN_EXIT_CODE:-1}"; fi
             ;;
         status)
             run_status "$OPT_VERBOSE"
@@ -4269,33 +4739,3 @@ main() {
 if [ "${UPSCAYL_V2_LIB:-0}" != "1" ]; then
     main "$@"
 fi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

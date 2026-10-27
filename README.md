@@ -6,19 +6,36 @@ A local FFmpeg + Upscayl pipeline for upscaling video:
 video → frames → Upscayl → frames → video (with audio, subtitles, chapters)
 ```
 
-**Status:** V1 and V2 implemented. Split, manual GUI or automated
-`upscayl-bin` upscaling, all-in-one `run`, chunked processing, and assemble
-work end-to-end in both versions.
+**Status:** V1 and V2 implemented and validated locally. Split, manual GUI or
+automated `upscayl-bin` upscaling, all-in-one `run`, chunked processing, and
+assemble work end-to-end in both versions.
+
+## Versions
+
+| | V1 (default) | V2 (optional) |
+|---|---|---|
+| Location | repository root | `v2/` |
+| Requires | Python 3.10+ | PowerShell 5.1+ (Windows), bash 3.2+ (Unix) |
+| Avoids | — | Python, Node, `jq` |
+| Launcher | `upscayl-video.bat` / `upscayl-video.sh` | `v2/windows/UpscaylVideo.bat` / `bash v2/unix/upscayl-video.sh` |
+
+Both versions use the same commands, flags, `job.txt` contract, presets,
+audio/subtitle rules, and exit codes. They share `config.txt` in the repository
+root and the same `work/` directory, so on Windows a job created by one version
+can be finished by the other.
+
+**Use only one if you want.** V1 does not depend on `v2/`: delete that folder
+and the pipeline keeps working. V2 is self-contained code in `v2/`; if you move
+it out of the repository, pass `--config` and `--work-dir` so it does not look
+for the original root.
 
 ## Repository layout
 
-- **`/` (root): V1 core**, Python 3.10+ CLI and launchers.
-- **`v2/`: V2 native** (PowerShell 5.1+ for Windows, bash 3.2+ for Unix),
-  no Python/Node/jq. See [`v2/README.md`](v2/README.md).
-- **`docs/`**: design spec, plans, usage, troubleshooting, and upstream notes.
-
-Both versions share the same `job.txt` folder contract, so users can choose
-the implementation that fits their machine without changing workflows.
+- **`/` — V1**, the Python reference implementation.
+- **`v2/` — V2**, the native implementation. Optional; see
+  [`v2/README.md`](v2/README.md).
+- **`docs/`** — shared usage, validation, troubleshooting, design, and plans.
+- **`TEST_EXAMPLE_VIDEOS/`** — local test clips, not committed.
 
 - Design: [`docs/specs/2026-10-26-upscayl-video-pipeline-design.md`](docs/specs/2026-10-26-upscayl-video-pipeline-design.md)
 - V1 core plan: [`docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md`](docs/superpowers/plans/2026-10-26-upscayl-video-pipeline-v1-core.md)
@@ -31,15 +48,19 @@ the implementation that fits their machine without changing workflows.
 
 ## What works now
 
-- One or many input videos, each with its own `work/<job>/` folder.
+- One or many input videos, each with its own `work/<job>/` folder; `upscale`
+  and `assemble` accept a job folder or the work directory.
 - Split to PNG or JPEG with optional denoise, HDR tonemapping, CFR conversion,
-  resume, and a sample-based disk estimate.
-- Manual batch upscaling in the Upscayl GUI.
-- Automated `upscayl-bin` upscaling in bounded, resumable batches.
-- All-in-one `run`: split → upscale → assemble, one or many videos.
-- Time-based chunking for long videos, with resume and cleanup.
-- Assembling standard or Upscayl-suffixed frame names, including one-level
-  output subfolders.
+  resume, `--decode auto` benchmarking, and a sample-based disk estimate.
+- `--dry-run` prints the plan and creates no job or frames.
+- Manual batch upscaling in the Upscayl GUI, with a menu picker for standard
+  and custom models.
+- Automated `upscayl-bin` upscaling in bounded, resumable batches, with
+  model/ICD/tile discovery and VRAM-based batch sizing.
+- All-in-one `run`: split → upscale → assemble, one or many videos, with an ETA
+  warning and `--yes` for runs longer than an hour.
+- Time-based chunking with `--chunk-seconds auto|N`, resume, `--keep-chunks`,
+  and `assemble` finishing a chunked job whose segments still exist.
 - MP4 H.264, MP4 HEVC, MKV HEVC, and MOV ProRes.
 - NVIDIA NVENC, AMD AMF, or CPU encoding, with automatic fallback.
 - Audio copy/AAC/PCM/none, multiple tracks on request, subtitles, chapters.
@@ -47,15 +68,30 @@ the implementation that fits their machine without changing workflows.
   nine-option menu.
 - Windows/NVIDIA Vulkan ICD workaround for the AMD enumeration bug.
 - Paths with spaces and Unicode.
-- **V2 parity:** the same commands, flags, `job.txt`/`config.txt` contract,
-  presets, audio/subtitle rules, exit codes, chunking, resume, doctor, and
-  nine-option menu in PowerShell and bash.
+- `--max-work-gb` / `--min-free-gb` disk guards and `cleanup=1` in config.
+- `--cleanup` publishes the final video to `output/` (configurable with
+  `output_dir` / `--output-dir`) and deletes the whole job folder, so `work/`
+  ends up empty.
+- **V2 parity:** the same commands, flags, contract, presets, audio/subtitle
+  rules, exit codes, chunking, resume, doctor, and menu in PowerShell and bash.
 
-Known limitation: `run --chunk-seconds auto` currently uses the non-chunked
-path in both versions; use an explicit value such as `60` for chunking. V2
-bash has been exercised on Git Bash for Windows and with syntax checks for
+V2 bash has been exercised on Git Bash for Windows and with syntax checks for
 bash 3.2, but not on native Linux/macOS. Details in
 [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
+## Custom models
+
+Upscayl requires the model directory to be named `models`. Put custom `.param`
+and `.bin` pairs in such a folder, then point `models_dir` at it, for example:
+
+```ini
+models_dir=D:\AI\UpscaylModels\models
+```
+
+The menu lists models from the configured directory and from the standard
+Upscayl models directory, so custom and built-in models can be mixed. For the
+GUI, use the same `models` folder. `doctor` and `upscale` show a clear error if
+the configured folder is not named `models`.
 
 ## Requirements
 
@@ -103,8 +139,8 @@ upscayl-video assemble "D:\UpscaylVideo\clip" --preset mp4-h264 --encoder auto
 # Or do everything automatically with Upscayl CLI
 upscayl-video run "clip.mp4" --model upscayl-lite-4x --scale 2 --preset mp4-h264
 
-# Long video: chunked run (explicit chunk length)
-upscayl-video run "movie.mkv" --chunk-seconds 60 --preset mkv-hevc --cleanup
+# Long video: chunked run (auto picks 60 s chunks when disk requires it)
+upscayl-video run "movie.mkv" --chunk-seconds auto --preset mkv-hevc --cleanup
 ```
 
 V2 uses the same commands and flags:
@@ -122,13 +158,14 @@ bash v2/unix/upscayl-video.sh run "clip.mp4" --preset mp4-hevc
 ```
 
 See [`docs/USAGE.md`](docs/USAGE.md) for every command and flag and
-[`v2/README.md`](v2/README.md) for V2 parity details.
+[`v2/README.md`](v2/README.md) for the native implementation.
 
 ## Configuration
 
-Copy `config.example.txt` to `config.txt` and set `ffmpeg`, `ffprobe`, and
-`work_dir`. CLI flags override the file. Put the work directory on a large
-drive; 1080p PNG frames are commonly 1–3 MiB each.
+Copy `config.example.txt` to `config.txt` in the repository root and set
+`ffmpeg`, `ffprobe`, and `work_dir`. CLI flags override the file. Both versions
+read this file. Put the work directory on a large drive; 1080p PNG frames are
+commonly 1–3 MiB each.
 
 ## License
 

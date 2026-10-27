@@ -1,4 +1,4 @@
-"""Pipeline orchestration for split, assemble, status, and clean."""
+﻿"""Pipeline orchestration for split, assemble, status, and clean."""
 
 from __future__ import annotations
 
@@ -85,6 +85,7 @@ class UpscaleOptions:
     upscaled_dir: Path | None = None
     retry: int = 1
     force: bool = False
+    assume_yes: bool = True
 
 
 @dataclass(frozen=True)
@@ -296,6 +297,7 @@ def run_split(
     *,
     dry_run: bool = False,
     assume_yes: bool = False,
+    keep_dry_run_job: bool = False,
 ) -> list[Job]:
     jobs: list[Job] = []
     for input_path in inputs:
@@ -426,6 +428,8 @@ def run_split(
             logger=logger,
         )
         if dry_run:
+            if keep_dry_run_job:
+                jobs.append(job)
             continue
 
         try:
@@ -553,6 +557,7 @@ def run_upscale(
                 retry=options.retry,
                 logger=logger,
                 progress=progress,
+                assume_yes=options.assume_yes,
             )
         except PipelineError as exc:
             job.set("last_error", str(exc)[:500])
@@ -743,6 +748,7 @@ def _run_chunked(
                 progress=progress,
                 source_dir=frames_dir,
                 total_frames=chunk.frame_count,
+                assume_yes=options.upscale.assume_yes,
             )
             frame_set = validate_frame_set(upscaled_dir, expected=chunk.frame_count)
             frame_width, frame_height = probe_first_frame_dimensions(
@@ -800,7 +806,9 @@ def _run_chunked(
         concat_output = job.chunks_dir / (
             "concat.mov" if preset.codec == "prores" else "concat.ts"
         )
-        concat_segments(config.ffmpeg, segments, concat_output, logger)
+        concat_output = concat_segments(
+            config.ffmpeg, segments, concat_output, logger
+        )
         mux = build_mux_command(
             job,
             media,
@@ -845,7 +853,7 @@ def _run_chunked(
         job.save()
         job.mark_done("assemble")
         if options.cleanup:
-            _cleanup_intermediates(job)
+            final_output = _publish_and_purge(job, final_output, config, logger)
         return RunResult(source, job, final_output, None)
     except PipelineError as exc:
         if temp_output is not None and temp_output.exists():
@@ -861,11 +869,80 @@ def _run_chunked(
         return RunResult(source, job, None, str(exc))
 
 
+_AUTO_CHUNK_SECONDS = 60
+
+
+def _auto_chunk_seconds(
+    input_path: Path,
+    config: Config,
+    options: RunOptions,
+    logger: Logger,
+) -> int:
+    """Return a chunk length when automatic chunking is needed, else 0."""
+
+    source = Path(input_path).expanduser().resolve()
+    media = probe_media(config.ffprobe, source, logger)
+    if media.duration <= 0:
+        return 0
+    if options.split.fps:
+        fps_num, fps_den = _parse_fps_override(options.split.fps)
+        media = dataclasses.replace(media, fps_num=fps_num, fps_den=fps_den)
+    start = parse_time(options.split.start) if options.split.start else 0.0
+    end = parse_time(options.split.end) if options.split.end else media.duration
+    end = min(end, media.duration)
+    duration = end - start
+    if duration <= 0:
+        return 0
+
+    job = Job.create_or_open(config.work_dir, source, logger, create=False)
+    if any(job.path.glob(".done_chunk_*")):
+        return job.get_int("chunk_seconds") or _AUTO_CHUNK_SECONDS
+    if _has_frames(job):
+        # A non-chunked split already exists; do not silently re-chunk it.
+        return 0
+
+    scale, _ = _resolve_scale(media, options.split, job, config)
+    frames = int(round(duration * media.fps_decimal))
+    sample = sample_frame_bytes(
+        job.source_path,
+        job,
+        media,
+        config,
+        fmt=options.split.format,
+        denoise=options.split.denoise,
+        tonemap=options.split.tonemap,
+        decode=options.split.decode,
+        logger=logger,
+        start=start,
+        duration=duration,
+    )
+    estimate = estimate_disk(sample, frames, scale)
+    estimate = dataclasses.replace(
+        estimate, free_bytes=free_bytes(config.work_dir)
+    )
+    logger.info(
+        "Auto-chunk estimate: "
+        f"{format_duration(duration)}, {frames} frames, "
+        f"estimated {human_bytes(estimate.total_bytes)}, "
+        f"free {human_bytes(estimate.free_bytes)}"
+    )
+    cap = config.max_work_gb * 1024**3
+    floor = config.min_free_gb * 1024**3
+    if estimate.total_bytes > cap or estimate.free_bytes - estimate.total_bytes < floor:
+        logger.info(
+            f"Automatic chunking enabled; using {_AUTO_CHUNK_SECONDS}s chunks."
+        )
+        return _AUTO_CHUNK_SECONDS
+    return 0
+
+
 def run_all(
     inputs: Sequence[Path],
     config: Config,
     options: RunOptions,
     logger: Logger,
+    *,
+    dry_run: bool = False,
 ) -> list[RunResult]:
     if len(inputs) > 1 and options.encode.output is not None:
         requested = Path(options.encode.output).expanduser()
@@ -878,13 +955,76 @@ def run_all(
                 hint="Pass a directory (or omit --output).",
             )
     results: list[RunResult] = []
+    if dry_run:
+        preset = resolve_preset(options.encode.preset)
+        for input_path in inputs:
+            jobs = run_split(
+                [input_path],
+                config,
+                options.split,
+                logger,
+                dry_run=True,
+                keep_dry_run_job=True,
+            )
+            job = jobs[0]
+            duration = float(job.get("duration") or 0.0)
+            fps = float(job.get("fps_decimal") or 0.0)
+            frames = int(round(duration * fps))
+            scale = job.get_int("scale") or options.upscale.scale
+            chunk_value = str(options.chunk_seconds).strip().lower()
+            if chunk_value not in {"0", "auto"}:
+                try:
+                    chunk_seconds = max(10, int(chunk_value))
+                except ValueError as exc:
+                    raise ValidationError(
+                        f"Invalid --chunk-seconds: {chunk_value}"
+                    ) from exc
+                chunks = plan_chunks(duration, fps, chunk_seconds)
+                logger.info(
+                    f"Would process {frames} frames in {len(chunks)} chunks "
+                    f"of {chunk_seconds}s"
+                )
+            elif chunk_value == "auto":
+                logger.info(
+                    f"Would decide automatic chunking for {frames} frames "
+                    "from the disk estimate"
+                )
+            logger.info(
+                f"Would upscale {frames} frames with {options.upscale.model} "
+                f"at {scale}x"
+            )
+            output = _resolve_output_path(
+                job,
+                preset.extension,
+                options.encode,
+                multiple_jobs=len(inputs) > 1,
+            )
+            logger.info(f"Would assemble -> {output}")
+            results.append(RunResult(input_path, job, None, None))
+        logger.info(f"{'INPUT':<32} {'STATUS':<8} OUTPUT")
+        for result in results:
+            logger.info(f"{result.input_path.name[:32]:<32} {'DRY':<8} -")
+        return results
+
     for input_path in inputs:
         chunk_value = str(options.chunk_seconds).strip().lower()
-        if chunk_value not in {"0", "auto"}:
+        chunk_seconds = 0
+        if chunk_value == "auto":
+            chunk_seconds = _auto_chunk_seconds(
+                Path(input_path), config, options, logger
+            )
+        elif chunk_value != "0":
             try:
                 chunk_seconds = int(chunk_value)
             except ValueError as exc:
                 raise ValidationError(f"Invalid --chunk-seconds: {chunk_value}") from exc
+            if chunk_seconds < 10:
+                logger.warn(
+                    f"--chunk-seconds {chunk_seconds} is below the minimum; "
+                    "using 10 seconds."
+                )
+                chunk_seconds = 10
+        if chunk_seconds > 0:
             result = _run_chunked(
                 Path(input_path), config, options, chunk_seconds, logger
             )
@@ -898,20 +1038,6 @@ def run_all(
             run_upscale([job], config, options.upscale, logger)
             outputs = run_assemble([job], config, options.encode, logger)
             output = outputs[0] if outputs else None
-            if options.cleanup:
-                run_clean(
-                    [job],
-                    config,
-                    frames=False,
-                    upscaled=False,
-                    chunks=False,
-                    sequence=False,
-                    batch=False,
-                    include_output=False,
-                    all_intermediates=True,
-                    dry_run=False,
-                    logger=logger,
-                )
             results.append(RunResult(input_path, job, output, None))
         except PipelineError as exc:
             results.append(RunResult(input_path, job, None, str(exc)))
@@ -946,7 +1072,16 @@ def resolve_jobs(
     jobs: list[Job] = []
     seen: set[Path] = set()
     for raw in args:
-        job = Job.load(Path(raw).expanduser().resolve())
+        path = Path(raw).expanduser().resolve()
+        if path.is_dir() and not (path / "job.txt").is_file():
+            nested = find_jobs(path)
+            if nested:
+                for job in nested:
+                    if job.path not in seen:
+                        seen.add(job.path)
+                        jobs.append(job)
+                continue
+        job = Job.load(path)
         if job.path not in seen:
             seen.add(job.path)
             jobs.append(job)
@@ -1036,6 +1171,52 @@ def _resolve_output_path(
     return _validate_output_path(requested, job, extension)
 
 
+def _publish_and_purge(job: Job, output: Path, config: Config, logger: Logger) -> Path:
+    """Move the final output to output_dir and delete the whole job folder."""
+    job_root = job.path.resolve()
+    try:
+        output_resolved = output.resolve()
+        inside_job = output_resolved == job_root or job_root in output_resolved.parents
+    except OSError:
+        inside_job = False
+
+    target = output
+    if inside_job:
+        output_root = config.output_dir.resolve()
+        if output_root == job_root or job_root in output_root.parents:
+            raise ValidationError(
+                f"output_dir must be outside the job folder: {output_root}",
+                hint="Point output_dir at a separate folder, for example output.",
+            )
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        target = _collision_path(config.output_dir / output.name)
+        try:
+            shutil.move(str(output), str(target))
+        except OSError as exc:
+            raise PipelineError(
+                f"Could not move the output to {target}: {exc}",
+                hint="The job folder was kept.",
+            ) from exc
+        logger.info(f"Output moved: {target}")
+
+    try:
+        log_file = logger.log_file
+        if log_file is not None:
+            log_path = Path(log_file).resolve()
+            if log_path == job_root or job_root in log_path.parents:
+                logger.set_log_file(None)
+    except OSError:
+        logger.set_log_file(None)
+
+    try:
+        shutil.rmtree(job.path)
+    except OSError as exc:
+        logger.warn(f"Could not remove the work folder {job.path}: {exc}")
+    else:
+        logger.info(f"Removed work folder: {job.path}")
+    return target
+
+
 def _cleanup_intermediates(job: Job) -> None:
     for directory in (
         job.frames_dir,
@@ -1045,6 +1226,182 @@ def _cleanup_intermediates(job: Job) -> None:
     ):
         if directory.exists():
             shutil.rmtree(directory)
+
+
+def _assemble_chunked_job(
+    job: Job,
+    config: Config,
+    options: EncodeOptions,
+    preset,
+    logger: Logger,
+    *,
+    dry_run: bool,
+    multiple_jobs: bool,
+) -> Path:
+    """Finish an interrupted chunked job by copying its encoded segments."""
+
+    media = probe_media(config.ffprobe, job.source_path, logger)
+    duration = float(job.get("duration") or media.duration)
+    fps = float(job.get("fps_decimal") or media.fps_decimal or 0.0)
+    chunk_seconds = job.get_int("chunk_seconds")
+    if chunk_seconds <= 0:
+        raise ValidationError(
+            f"Chunked job has no chunk length: {job.job_id}",
+            hint="Resume it with the run command.",
+        )
+    chunks = plan_chunks(duration, fps, chunk_seconds)
+    if not chunks:
+        raise ValidationError(f"Chunk plan is empty: {job.job_id}")
+
+    segments: list[Path] = []
+    for chunk in chunks:
+        segment = None
+        for suffix in (".ts", ".mov"):
+            candidate = job.chunks_dir / f"chunk_{chunk.index:04d}{suffix}"
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                segment = candidate
+                break
+        marker = job.path / f".done_chunk_{chunk.index:04d}"
+        if segment is None or not marker.is_file():
+            raise ValidationError(
+                f"Chunk {chunk.index} is incomplete: {job.job_id}",
+                hint="Resume the job with the run command.",
+            )
+        segments.append(segment)
+    if not segments:
+        raise ValidationError(
+            f"No chunk segments found: {job.chunks_dir}",
+            hint="Resume the job with the run command.",
+        )
+
+    job_preset = resolve_preset(job.get("preset") or options.preset)
+    if job_preset.codec != preset.codec:
+        raise ValidationError(
+            f"Chunked job was encoded as {job_preset.codec}; "
+            f"use a matching preset instead of {preset.name}.",
+        )
+
+    first_info = probe_media(config.ffprobe, segments[0], logger)
+    if first_info.duration <= 0 or first_info.width <= 0 or first_info.height <= 0:
+        raise ValidationError(f"Invalid chunk segment: {segments[0]}")
+    expected_width = first_info.width
+    expected_height = first_info.height
+
+    audio_mode = options.audio or (
+        config.default_audio
+        if config.default_audio != "auto"
+        else preset.default_audio
+    )
+    subs_mode = options.subs or (
+        config.default_subs
+        if config.default_subs != "auto"
+        else preset.default_subs
+    )
+    audio_plan = plan_audio(
+        media, preset, audio_mode, options.audio_bitrate, options.all_audio
+    )
+    range_start = float(job.get("range_start") or 0.0)
+    if range_start > 0:
+        if any(stream.mode == "copy" for stream in audio_plan.streams):
+            logger.warn(
+                "Trimming active: copied audio is re-encoded as AAC "
+                "for a sample-accurate start."
+            )
+            audio_plan = dataclasses.replace(
+                audio_plan,
+                streams=tuple(
+                    dataclasses.replace(stream, mode="aac")
+                    if stream.mode == "copy"
+                    else stream
+                    for stream in audio_plan.streams
+                ),
+            )
+        if media.chapters:
+            logger.warn(
+                "Chapters come from the source and may not be shifted "
+                "for the trimmed range."
+            )
+    subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
+
+    final_output = _resolve_output_path(
+        job, preset.extension, options, multiple_jobs=multiple_jobs
+    )
+    if dry_run:
+        logger.info(
+            f"Would assemble chunked {job.job_id} "
+            f"({len(segments)} segment(s)) -> {final_output}"
+        )
+        return final_output
+    if options.upscaled_dir is not None:
+        logger.warn("--upscaled-dir is ignored for a chunked job.")
+
+    temp_output = final_output.with_name(
+        f"{final_output.stem}.partial{final_output.suffix}"
+    )
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        job.clear_stage("assemble")
+        concat_name = (
+            "concat.mov" if segments[0].suffix.lower() == ".mov" else "concat.ts"
+        )
+        concat_output = concat_segments(
+            config.ffmpeg,
+            segments,
+            job.chunks_dir / concat_name,
+            logger,
+        )
+        mux = build_mux_command(
+            job,
+            media,
+            preset,
+            audio_plan,
+            subtitle_plan,
+            options,
+            concat_output,
+            temp_output,
+            duration,
+        )
+        mux[0] = str(config.ffmpeg)
+        run_command(mux, logger=logger)
+        normalize_color_tags(
+            config.ffmpeg,
+            config.ffprobe,
+            temp_output,
+            preset.container,
+            logger,
+        )
+        validate_output(
+            config.ffprobe,
+            temp_output,
+            job,
+            media,
+            options,
+            expected_width,
+            expected_height,
+            audio_plan.enabled,
+            len(subtitle_plan.streams),
+            logger,
+        )
+        os.replace(temp_output, final_output)
+        if not options.keep_chunks:
+            shutil.rmtree(job.chunks_dir, ignore_errors=True)
+        job.set("preset", preset.name)
+        job.set("encoder", options.encoder)
+        job.set("audio", audio_mode)
+        job.set("subs", subs_mode)
+        job.set("last_error", "")
+        job.save()
+        job.mark_done("assemble")
+        if options.cleanup:
+            final_output = _publish_and_purge(job, final_output, config, logger)
+        return final_output
+    except Exception:
+        if temp_output.exists():
+            try:
+                temp_output.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def run_assemble(
@@ -1082,10 +1439,18 @@ def run_assemble(
                 )
 
             if any(job.path.glob(".done_chunk_*")):
-                raise ValidationError(
-                    f"Job is chunked: {job.job_id}",
-                    hint="Resume it with the run command.",
+                outputs.append(
+                    _assemble_chunked_job(
+                        job,
+                        config,
+                        job_options,
+                        preset,
+                        logger,
+                        dry_run=dry_run,
+                        multiple_jobs=multiple,
+                    )
                 )
+                continue
             media = probe_media(config.ffprobe, job.source_path, logger)
             upscaled_dir = (
                 Path(options.upscaled_dir).expanduser()
@@ -1268,7 +1633,7 @@ def run_assemble(
             job.save()
             job.mark_done("assemble")
             if options.cleanup:
-                _cleanup_intermediates(job)
+                final_output = _publish_and_purge(job, final_output, config, logger)
             outputs.append(final_output)
         except PipelineError as exc:
             if temp_output is not None and temp_output.exists():

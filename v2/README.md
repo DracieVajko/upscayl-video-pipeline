@@ -1,18 +1,26 @@
-# V2 — native implementation
+# V2 — native implementation (optional)
 
-V2 is the no-Python, no-Node, no-`jq` implementation of the pipeline. It uses
-the same commands, flags, folder layout, `job.txt`/`config.txt` contract,
-presets, audio/subtitle rules, exit codes, chunking, resume, doctor, and
-nine-option menu as V1.
+V2 is the no-Python, no-Node, no-`jq` implementation of the pipeline. It
+accepts the same commands, flags, folder layout, `job.txt`/`config.txt`
+contract, presets, audio/subtitle rules, exit codes, chunking, resume, doctor,
+and nine-option menu as V1.
+
+V2 is optional. V1 lives in the repository root and does not need this folder;
+if you use only V1, delete `v2/` and nothing else changes. V2 reads
+`config.txt` from the repository root and uses the same `work/` directory, so
+on Windows either version can finish a job created by the other.
+
+## Files
 
 - `windows/UpscaylVideo.ps1` — PowerShell 5.1+ implementation.
 - `windows/UpscaylVideo.bat` — launcher.
 - `unix/upscayl-video.sh` — bash 3.2+ implementation.
+- `tests/` — PowerShell and bash test harnesses (not needed to run the tool).
 
 ## Requirements
 
 - Windows: PowerShell 5.1+.
-- Linux/macOS: bash 3.2+ (POSIX tools).
+- Linux/macOS: bash 3.2+ and POSIX tools.
 - FFmpeg and ffprobe.
 - Upscayl's `upscayl-bin` and models for `upscale`/`run`. `split`, `assemble`,
   and manual GUI upscaling work without the Upscayl CLI.
@@ -39,9 +47,21 @@ bash v2/unix/upscayl-video.sh status
 bash v2/unix/upscayl-video.sh clean work/clip --all-intermediates
 ```
 
-Every flag from V1 is accepted. See [`../docs/USAGE.md`](../docs/USAGE.md) for
-the full reference and [`../docs/VALIDATION.md`](../docs/VALIDATION.md) for the
-verified behaviour.
+Every V1 flag is accepted. The full reference is
+[`../docs/USAGE.md`](../docs/USAGE.md); verified behaviour is recorded in
+[`../docs/VALIDATION.md`](../docs/VALIDATION.md).
+
+## Standalone use
+
+The runtime needs only this folder, FFmpeg, and Upscayl. The launchers resolve
+the tool root as two levels above the script:
+
+- `v2/windows/UpscaylVideo.ps1` → repository root
+- `v2/unix/upscayl-video.sh` → repository root
+
+If you copy `v2/` elsewhere, that root becomes the parent of the copied folder.
+Either put `config.txt` there or pass `--config PATH` and `--work-dir PATH`
+explicitly.
 
 ## Tests
 
@@ -60,7 +80,8 @@ RUN_V2_INTEGRATION=1 bash v2/tests/Test-V2.sh
 ```
 
 The V2 runtimes never call Python, Node, or `jq`. The test harnesses may use
-Python only to drive V1 for parity checks.
+Python only to drive V1 for parity checks. The test scripts assume the full
+repository layout, not a copied `v2/` folder.
 
 ## Known differences
 
@@ -71,8 +92,6 @@ Python only to drive V1 for parity checks.
 - V2 jobs use native paths for the current OS. A job created under Git Bash
   with POSIX paths is not directly consumable by a Windows-native V1; jobs are
   not portable across operating systems by design.
-- `run --chunk-seconds auto` uses the non-chunked path, matching V1; use an
-  explicit value such as `60`.
 - The bash implementation was validated on Git Bash for Windows and with
   `bash -n` syntax checks targeting bash 3.2. Native Linux/macOS execution and
   macOS bash 3.2 are not yet part of the recorded validation.

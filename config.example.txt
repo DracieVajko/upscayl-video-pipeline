@@ -5,8 +5,12 @@
 ffmpeg=ffmpeg
 ffprobe=ffprobe
 upscayl_bin=auto
+# For custom models, point this at a folder named "models" containing
+# matching .param and .bin files (Upscayl rejects other folder names).
+# Example: models_dir=D:\AI\UpscaylModels\models
 models_dir=auto
 work_dir=work
+output_dir=output
 default_model=upscayl-standard-4x
 default_scale=2
 default_preset=mp4-h264

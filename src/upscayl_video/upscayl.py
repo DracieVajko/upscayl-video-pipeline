@@ -1,4 +1,4 @@
-"""Discovery and sizing helpers for Upscayl's CLI and models."""
+﻿"""Discovery and sizing helpers for Upscayl's CLI and models."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import glob
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,6 +157,12 @@ def _resolve_models_dir(config: Config, binary: Path) -> Path:
 def discover_upscayl(config: Config) -> UpscaylPaths:
     binary = _resolve_binary(config)
     models = _resolve_models_dir(config, binary)
+    if models.name.lower() != "models":
+        raise DependencyError(
+            f"Upscayl model directory must be named 'models': {models}",
+            hint="Rename the folder or create a folder named models "
+            "containing matching .param/.bin files.",
+        )
     list_models(models)
     return UpscaylPaths(binary=binary, models_dir=models)
 
@@ -356,6 +363,28 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _confirm_long_upscale(
+    logger: Logger,
+    eta_seconds: float,
+    assume_yes: bool,
+) -> None:
+    """Ask before starting/continuing an upscale expected to take over an hour."""
+
+    if assume_yes:
+        return
+    hours = eta_seconds / 3600
+    if not sys.stdin.isatty():
+        raise ValidationError(
+            f"Estimated upscale time is {hours:.1f} hours.",
+            hint="Re-run with --yes to continue.",
+        )
+    answer = input(
+        f"Estimated upscale time is {hours:.1f} hours. Continue? [y/N] "
+    ).strip().lower()
+    if answer not in {"y", "yes"}:
+        raise ValidationError("Aborted by user.")
+
+
 def upscale_frames(
     job: Job,
     paths: UpscaylPaths,
@@ -373,6 +402,7 @@ def upscale_frames(
     progress: Progress | None = None,
     source_dir: Path | None = None,
     total_frames: int | None = None,
+    assume_yes: bool = True,
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -460,16 +490,19 @@ def upscale_frames(
         if progress is not None:
             progress.update(len(batch))
             logger.info(progress.line())
-            if not eta_warned and progress.eta_seconds > 12 * 3600:
+            if not eta_warned and progress.eta_seconds > 3600:
                 eta_warned = True
-                logger.warn(
-                    "Estimated upscale time exceeds 12 hours; use a faster model "
-                    "(upscayl-lite-4x) or process the video in chunks."
-                )
-            elif not eta_warned and progress.eta_seconds > 3600:
-                eta_warned = True
-                logger.warn(
-                    f"Estimated upscale time is {progress.eta_seconds / 3600:.1f} hours."
+                if progress.eta_seconds > 12 * 3600:
+                    logger.warn(
+                        "Estimated upscale time exceeds 12 hours; use a faster "
+                        "model (upscayl-lite-4x) or process the video in chunks."
+                    )
+                else:
+                    logger.warn(
+                        f"Estimated upscale time is {progress.eta_seconds / 3600:.1f} hours."
+                    )
+                _confirm_long_upscale(
+                    logger, progress.eta_seconds, assume_yes
                 )
         else:
             logger.info(f"Upscaled batch of {len(batch)} frames")

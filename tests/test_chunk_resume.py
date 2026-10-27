@@ -11,6 +11,7 @@ from upscayl_video.pipeline import (
     SplitOptions,
     UpscaleOptions,
     run_all,
+    run_assemble,
 )
 from upscayl_video.util import Logger
 from tests.util import find_ffmpeg, find_ffprobe, make_clip
@@ -103,6 +104,54 @@ class TestChunkResume(unittest.TestCase):
             second = run_all([self.clip], cfg, self.options(), Logger(quiet=True))[0]
         self.assertIsNone(second.error)
         self.assertEqual(len(calls), 1)
+
+    def test_assemble_existing_chunked_job(self):
+        cfg = load_config(None, overrides={
+            "ffmpeg": self.ffmpeg,
+            "ffprobe": self.ffprobe,
+            "work_dir": str(self.root / "work-assemble"),
+            "upscayl_bin": str(self.binary),
+            "models_dir": str(self.models),
+        })
+
+        def fake_upscale(job, paths, *, source_dir, total_frames, output_dir, **kwargs):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [
+                    self.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    "-framerate", "30", "-start_number", "1",
+                    "-i", str(Path(source_dir) / "frame_%08d.png"),
+                    "-vf", "scale=iw*2:ih*2",
+                    str(Path(output_dir) / "frame_%08d.png"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return total_frames
+
+        with patch("upscayl_video.pipeline.upscale_frames", side_effect=fake_upscale):
+            first = run_all([self.clip], cfg, self.options(), Logger(quiet=True))[0]
+        self.assertIsNone(first.error)
+        job = first.job
+        self.assertIsNotNone(first.output)
+        first.output.unlink()
+        (job.path / ".done_assemble").unlink()
+
+        outputs = run_assemble(
+            [job],
+            cfg,
+            EncodeOptions(
+                encoder="cpu",
+                preset="mp4-h264",
+                audio="copy",
+                keep_chunks=True,
+            ),
+            Logger(quiet=True),
+        )
+        self.assertEqual(len(outputs), 1)
+        self.assertTrue(outputs[0].exists())
+        self.assertTrue((job.path / ".done_assemble").exists())
+        self.assertTrue(any(job.chunks_dir.glob("chunk_*.ts")))
 
     def test_low_disk_aborts_chunk(self):
         cfg = self.config()

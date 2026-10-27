@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Upscayl Video Pipeline V2 - native Windows implementation.
@@ -475,6 +475,7 @@ function Get-DefaultConfigValues {
         upscayl_bin     = 'auto'
         models_dir      = 'auto'
         work_dir        = 'work'
+        output_dir      = 'output'
         default_model   = 'upscayl-standard-4x'
         default_scale   = '2'
         default_preset  = 'mp4-h264'
@@ -628,6 +629,11 @@ function Get-Config {
     if (-not [IO.Path]::IsPathRooted($workDir)) { $workDir = Join-Path $workOrigin $workDir }
     $workDir = [IO.Path]::GetFullPath($workDir)
 
+    $outputOrigin = if ($overrideKeys.ContainsKey('output_dir')) { (Get-Location).Path } else { $configDir }
+    $outputDir = Expand-HomePath $merged['output_dir']
+    if (-not [IO.Path]::IsPathRooted($outputDir)) { $outputDir = Join-Path $outputOrigin $outputDir }
+    $outputDir = [IO.Path]::GetFullPath($outputDir)
+
     $defaultScale = ConvertTo-IntValue $merged['default_scale'] 'default_scale'
     if (@(2, 3, 4) -notcontains $defaultScale) {
         throw [PipelineException]::new('default_scale must be 2, 3, or 4', $null, 4)
@@ -669,6 +675,7 @@ function Get-Config {
         upscayl_bin     = (Get-OptionalPath 'upscayl_bin')
         models_dir      = (Get-OptionalPath 'models_dir')
         work_dir        = $workDir
+        output_dir      = $outputDir
         default_model   = $merged['default_model'].Trim()
         default_scale   = $defaultScale
         default_preset  = $defaultPreset
@@ -2449,6 +2456,9 @@ function Get-UpscaylPaths {
     param($Config)
     $binary = Resolve-UpscaylBinary $Config
     $models = Resolve-ModelsDirectory $Config $binary
+    if ([IO.Path]::GetFileName($models).ToLowerInvariant() -ne 'models') {
+        throw [PipelineException]::new("Upscayl model directory must be named 'models': $models", 'Rename the folder or create a folder named models containing matching .param/.bin files.', 3)
+    }
     $null = Get-ModelList $models
     return @{ binary = $binary; models_dir = $models }
 }
@@ -2646,7 +2656,8 @@ function Invoke-UpscaleFrames {
         $Logger = $null,
         $Progress = $null,
         [string]$SourceDir = $null,
-        $TotalFrames = $null
+        $TotalFrames = $null,
+        [bool]$AssumeYes = $true
     )
     if (-not (Test-Path -LiteralPath $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
     if (-not $SourceDir) { $SourceDir = Join-Path $Job.path 'frames' }
@@ -2721,12 +2732,22 @@ function Invoke-UpscaleFrames {
             $Progress.done = [math]::Min($Progress.total, $Progress.done + $batch.Count)
             Write-Info (Get-ProgressLine $Progress)
             $eta = Get-ProgressEta $Progress
-            if (-not $etaWarned -and $eta -gt 12 * 3600) {
+            if (-not $etaWarned -and $eta -gt 3600) {
                 $etaWarned = $true
-                Write-Warn 'Estimated upscale time exceeds 12 hours; use a faster model (upscayl-lite-4x) or process the video in chunks.'
-            } elseif (-not $etaWarned -and $eta -gt 3600) {
-                $etaWarned = $true
-                Write-Warn ('Estimated upscale time is ' + ($eta / 3600).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) + ' hours.')
+                if ($eta -gt 12 * 3600) {
+                    Write-Warn 'Estimated upscale time exceeds 12 hours; use a faster model (upscayl-lite-4x) or process the video in chunks.'
+                } else {
+                    Write-Warn ('Estimated upscale time is ' + ($eta / 3600).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) + ' hours.')
+                }
+                if (-not $AssumeYes) {
+                    if ([Console]::IsInputRedirected) {
+                        throw [PipelineException]::new(('Estimated upscale time is ' + ($eta / 3600).ToString('0.0', [Globalization.CultureInfo]::InvariantCulture) + ' hours.'), 'Re-run with --yes to continue.', 4)
+                    }
+                    $answer = (Read-Host 'Continue? [y/N]').Trim().ToLowerInvariant()
+                    if (@('y', 'yes') -notcontains $answer) {
+                        throw [PipelineException]::new('Aborted by user.', $null, 4)
+                    }
+                }
             }
         } else {
             Write-Info ('Upscaled batch of ' + $batch.Count + ' frames')
@@ -2798,9 +2819,24 @@ function Invoke-ConcatSegments {
     )
     try {
         Invoke-Child -Arguments $arguments | Out-Null
+        return $Output
     } catch {
-        $ex = Get-PipelineException $_
-        throw [PipelineException]::new('Could not concatenate chunk segments.', $ex.Message, 7)
+        $first = Get-PipelineException $_
+    }
+    $fallback = [IO.Path]::ChangeExtension($Output, '.mkv')
+    $fallbackList = [IO.Path]::ChangeExtension($fallback, '.txt')
+    $null = Write-ConcatList -Segments $Segments -Path $fallbackList
+    $fallbackArguments = @(
+        $Ffmpeg, '-hide_banner', '-nostdin', '-y', '-f', 'concat', '-safe', '0',
+        '-i', $fallbackList, '-c', 'copy', '-fflags', '+genpts', $fallback
+    )
+    try {
+        Invoke-Child -Arguments $fallbackArguments | Out-Null
+        Write-Warn ('Chunk concatenation failed in ' + [IO.Path]::GetExtension($Output) + '; used Matroska fallback: ' + $fallback)
+        return $fallback
+    } catch {
+        $second = Get-PipelineException $_
+        throw [PipelineException]::new('Could not concatenate chunk segments.', ($first.Message + [Environment]::NewLine + 'Matroska fallback: ' + $second.Message), 7)
     }
 }
 
@@ -3009,7 +3045,7 @@ function Resolve-Scale {
 }
 
 function Invoke-Split {
-    param([string[]]$Inputs, $Config, $Options, $Logger, [bool]$DryRun = $false, [bool]$AssumeYes = $false)
+    param([string[]]$Inputs, $Config, $Options, $Logger, [bool]$DryRun = $false, [bool]$AssumeYes = $false, [bool]$KeepDryRunJob = $false)
     $jobs = @()
     foreach ($inputPath in $Inputs) {
         $source = [IO.Path]::GetFullPath($inputPath)
@@ -3115,7 +3151,10 @@ function Invoke-Split {
         $estimate.free_bytes = Get-FreeBytes $Config.work_dir
         Write-Info ("Job " + [IO.Path]::GetFileName($job.path) + ': ' + (Format-Duration $processedDuration) + ', ' + $expectedFrames + ' frames, sample ' + (Format-Bytes $sampleBytes) + ', estimated ' + (Format-Bytes $estimate.total_bytes) + ', free ' + (Format-Bytes $estimate.free_bytes))
         Test-DiskEstimate -Estimate $estimate -Config $Config -Logger $Logger
-        if ($DryRun) { continue }
+        if ($DryRun) {
+            if ($KeepDryRunJob) { $jobs += $job }
+            continue
+        }
 
         try {
             $count = Invoke-FrameExtraction -Job $job -Media $media -Config $Config -Format $Options.format -JpegQuality $Options.jpeg_quality -PngCompression $Options.png_compression -Denoise $Options.denoise -Tonemap $Options.tonemap -Decode $Options.decode -Start $start -End $end -Verify $Options.verify_frames -Logger $Logger
@@ -3194,7 +3233,7 @@ function Invoke-Upscale {
         }
         $progress = New-ProgressState 'upscale' $frameCount
         try {
-            $count = Invoke-UpscaleFrames -Job $job -Paths $paths -Model $Options.model -Scale $Options.scale -OutputDir $outputDir -Tile $tile -BatchSize $batchSize -Gpu $Options.gpu -Icd $icd -Threads $Options.threads -Retry $Options.retry -Logger $Logger -Progress $progress
+            $count = Invoke-UpscaleFrames -Job $job -Paths $paths -Model $Options.model -Scale $Options.scale -OutputDir $outputDir -Tile $tile -BatchSize $batchSize -Gpu $Options.gpu -Icd $icd -Threads $Options.threads -Retry $Options.retry -Logger $Logger -Progress $progress -AssumeYes $Options.assume_yes
         } catch {
             $ex = Get-PipelineException $_
             if ($ex -is [PipelineException]) {
@@ -3345,7 +3384,7 @@ function Invoke-ChunkedRun {
             $null = Validate-FrameSet -Directory $framesDir -Expected $chunk.frame_count
             $batchWidth = (Get-JobInt $job 'width' 1920) * $(if ((Get-JobInt $job 'scale' 0) -gt 0) { Get-JobInt $job 'scale' 0 } else { $Options.upscale.scale })
             $batchHeight = (Get-JobInt $job 'height' 1080) * $(if ((Get-JobInt $job 'scale' 0) -gt 0) { Get-JobInt $job 'scale' 0 } else { $Options.upscale.scale })
-            $null = Invoke-UpscaleFrames -Job $job -Paths $paths -Model $Options.upscale.model -Scale $Options.upscale.scale -OutputDir $upscaledDir -Tile $tile -BatchSize (Resolve-BatchSize $Options.upscale.batch_size $batchWidth $batchHeight) -Gpu $Options.upscale.gpu -Icd $icd -Threads $Options.upscale.threads -Retry $Options.upscale.retry -Logger $Logger -Progress $progress -SourceDir $framesDir -TotalFrames $chunk.frame_count
+            $null = Invoke-UpscaleFrames -Job $job -Paths $paths -Model $Options.upscale.model -Scale $Options.upscale.scale -OutputDir $upscaledDir -Tile $tile -BatchSize (Resolve-BatchSize $Options.upscale.batch_size $batchWidth $batchHeight) -Gpu $Options.upscale.gpu -Icd $icd -Threads $Options.upscale.threads -Retry $Options.upscale.retry -Logger $Logger -Progress $progress -SourceDir $framesDir -TotalFrames $chunk.frame_count -AssumeYes $Options.upscale.assume_yes
             $frameSet = Validate-FrameSet -Directory $upscaledDir -Expected $chunk.frame_count
             $dims = Get-FirstFrameDimensions -Ffprobe $Config.ffprobe -Path $frameSet.paths[0] -Logger $Logger
             $frameWidth = [int]$dims[0]
@@ -3387,7 +3426,7 @@ function Invoke-ChunkedRun {
             $expectedHeight = $firstSegment.height
         }
         $concatOutput = Join-Path $chunksDir $(if ($preset.codec -eq 'prores') { 'concat.mov' } else { 'concat.ts' })
-        Invoke-ConcatSegments -Ffmpeg $Config.ffmpeg -Segments $segments -Output $concatOutput -Logger $Logger
+        $concatOutput = Invoke-ConcatSegments -Ffmpeg $Config.ffmpeg -Segments $segments -Output $concatOutput -Logger $Logger
         $mux = Build-MuxCommand -Job $job -Media $media -Preset $preset -AudioPlan $audioPlan -SubtitlePlan $subtitlePlan -Options $Options.encode -ConcatVideo $concatOutput -Output $tempOutput -Duration $duration
         $mux[0] = $Config.ffmpeg
         Invoke-Child -Arguments $mux | Out-Null
@@ -3405,7 +3444,7 @@ function Invoke-ChunkedRun {
         Set-JobValue $job 'last_error' ''
         Save-Job $job
         Set-JobMarker $job 'assemble'
-        if ($Options.cleanup) { Clear-Intermediates $job }
+        if ($Options.cleanup) { $finalOutput = Publish-AndPurge $job $finalOutput $Config $Logger }
         return @{ input_path = $Source; job = $job; output = $finalOutput; error = $null }
     } catch {
         if ($tempOutput -and (Test-Path -LiteralPath $tempOutput)) {
@@ -3419,8 +3458,42 @@ function Invoke-ChunkedRun {
     }
 }
 
+function Get-AutoChunkSeconds {
+    param([string]$InputPath, $Config, $Options, $Logger)
+
+    $source = Resolve-AbsolutePath (Expand-HomePath $InputPath)
+    $media = Get-MediaInfo -Ffprobe $Config.ffprobe -Source $source -Logger $Logger
+    if ($media.duration -le 0) { return 0 }
+    $start = if ($Options.split.start) { Parse-TimeValue $Options.split.start } else { 0.0 }
+    $end = if ($Options.split.end) { Parse-TimeValue $Options.split.end } else { $media.duration }
+    $end = [math]::Min($end, $media.duration)
+    $duration = $end - $start
+    if ($duration -le 0) { return 0 }
+    $job = Find-OrCreateJob -WorkDir $Config.work_dir -Source $source -Logger $Logger -NoCreate
+    $markers = @(Get-ChildItem -LiteralPath $job.path -Filter '.done_chunk_*' -File -Force -ErrorAction SilentlyContinue)
+    if ($markers.Count -gt 0) {
+        $stored = Get-JobInt $job 'chunk_seconds' 0
+        if ($stored -gt 0) { return $stored }
+        return 60
+    }
+    if (Test-JobHasFrames $job) { return 0 }
+    $scaleInfo = Resolve-Scale -Media $media -Options $Options.split -Job $job -Config $Config
+    $frames = [int](Round-HalfEven ($duration * $media.fps_decimal))
+    $sample = Get-SampleFrameBytes -Source (Get-JobSourcePath $job) -Job $job -Media $media -Config $Config -Format $Options.split.format -Denoise $Options.split.denoise -Tonemap $Options.split.tonemap -Decode $Options.split.decode -Logger $Logger -Start $start -Duration $duration
+    $estimate = Get-DiskEstimate -SampleBytes $sample -FrameCount $frames -Scale ([int]$scaleInfo[0])
+    $estimate.free_bytes = Get-FreeBytes $Config.work_dir
+    Write-Info ('Auto-chunk estimate: ' + (Format-Duration $duration) + ', ' + $frames + ' frames, estimated ' + (Format-Bytes $estimate.total_bytes) + ', free ' + (Format-Bytes $estimate.free_bytes))
+    $cap = [int64]$Config.max_work_gb * 1024 * 1024 * 1024
+    $floor = [int64]$Config.min_free_gb * 1024 * 1024 * 1024
+    if ($estimate.total_bytes -gt $cap -or ($estimate.free_bytes - $estimate.total_bytes) -lt $floor) {
+        Write-Info 'Automatic chunking enabled; using 60s chunks.'
+        return 60
+    }
+    return 0
+}
+
 function Invoke-RunAll {
-    param([string[]]$Inputs, $Config, $Options, $Logger)
+    param([string[]]$Inputs, $Config, $Options, $Logger, [bool]$DryRun = $false)
     if ($Inputs.Count -gt 1 -and $Options.encode.output) {
         $requestedOutput = Resolve-AbsolutePath (Expand-HomePath ([string]$Options.encode.output))
         $treatAsDirectory = (Test-Path -LiteralPath $requestedOutput -PathType Container) -or ([IO.Path]::GetExtension($requestedOutput) -eq '')
@@ -3428,14 +3501,55 @@ function Invoke-RunAll {
             throw [PipelineException]::new('With multiple inputs, --output must be a directory.', 'Pass a directory (or omit --output).', 2)
         }
     }
+    if ($DryRun) {
+        $previewPreset = Resolve-Preset $Options.encode.preset
+        $dryResults = @()
+        foreach ($inputPath in $Inputs) {
+            $jobs = @(Invoke-Split -Inputs @($inputPath) -Config $Config -Options $Options.split -Logger $Logger -DryRun $true -KeepDryRunJob $true)
+            $job = $jobs[0]
+            $duration = ConvertTo-DoubleSafe (Get-JobValue $job 'duration' 0.0) 0.0
+            $fps = ConvertTo-DoubleSafe (Get-JobValue $job 'fps_decimal' 0.0) 0.0
+            $frames = [int](Round-HalfEven ($duration * $fps))
+            $scale = Get-JobInt $job 'scale' 0
+            if ($scale -le 0) { $scale = $Options.upscale.scale }
+            $chunkValue = ([string]$Options.chunk_seconds).Trim().ToLowerInvariant()
+            if (@('0', 'auto') -notcontains $chunkValue) {
+                $chunkSeconds = [int]$chunkValue
+                if ($chunkSeconds -lt 10) { $chunkSeconds = 10 }
+                $chunks = @(Get-ChunkPlan -Duration $duration -Fps $fps -ChunkSeconds $chunkSeconds)
+                Write-Info ("Would process " + $frames + " frames in " + $chunks.Count + " chunks of " + $chunkSeconds + 's')
+            } elseif ($chunkValue -eq 'auto') {
+                Write-Info ("Would decide automatic chunking for " + $frames + ' frames from the disk estimate')
+            }
+            Write-Info ("Would upscale " + $frames + " frames with " + $Options.upscale.model + ' at ' + $scale + 'x')
+            $output = Resolve-OutputPath -Job $job -Extension $previewPreset.extension -Options $Options.encode -MultipleJobs ($Inputs.Count -gt 1)
+            Write-Info ('Would assemble -> ' + $output)
+            $dryResults += @{ input_path = $inputPath; job = $job; output = $null; error = $null }
+        }
+        Write-Info (('{0,-32} {1,-8} {2}' -f 'INPUT', 'STATUS', 'OUTPUT'))
+        foreach ($result in $dryResults) {
+            $name = [IO.Path]::GetFileName([string]$result.input_path)
+            if ($name.Length -gt 32) { $name = $name.Substring(0, 32) }
+            Write-Info (('{0,-32} {1,-8} {2}' -f $name, 'DRY', '-'))
+        }
+        return $dryResults
+    }
     $results = @()
     foreach ($inputPath in $Inputs) {
         $chunkValue = ([string]$Options.chunk_seconds).Trim().ToLowerInvariant()
-        if (@('0', 'auto') -notcontains $chunkValue) {
-            $chunkSeconds = 0
+        $chunkSeconds = 0
+        if ($chunkValue -eq 'auto') {
+            $chunkSeconds = Get-AutoChunkSeconds -InputPath $inputPath -Config $Config -Options $Options -Logger $Logger
+        } elseif ($chunkValue -ne '0') {
             if (-not [int]::TryParse($chunkValue, [ref]$chunkSeconds)) {
                 throw [PipelineException]::new("Invalid --chunk-seconds: $chunkValue", $null, 4)
             }
+            if ($chunkSeconds -lt 10) {
+                Write-Warn ("--chunk-seconds $chunkSeconds is below the minimum; using 10 seconds.")
+                $chunkSeconds = 10
+            }
+        }
+        if ($chunkSeconds -gt 0) {
             $result = Invoke-ChunkedRun -Source $inputPath -Config $Config -Options $Options -ChunkSeconds $chunkSeconds -Logger $Logger
             $results += $result
             if ($result.error -and $Options.stop_on_error) {
@@ -3449,9 +3563,6 @@ function Invoke-RunAll {
             $null = Invoke-Upscale -Jobs @($job) -Config $Config -Options $Options.upscale -Logger $Logger
             $outputs = @(Invoke-Assemble -Jobs @($job) -Config $config -Options $Options.encode -Logger $Logger)
             $output = if ($outputs.Count -gt 0) { $outputs[0] } else { $null }
-            if ($Options.cleanup) {
-                Invoke-Clean -Jobs @($job) -Config $Config -Frames $false -Upscaled $false -Chunks $false -Sequence $false -Batch $false -IncludeOutput $false -AllIntermediates $true -DryRun $false -Logger $Logger
-            }
             $results += @{ input_path = $inputPath; job = $job; output = $output; error = $null }
         } catch {
             $ex = Get-PipelineException $_
@@ -3493,7 +3604,21 @@ function Resolve-Jobs {
     $jobs = @()
     $seen = @{}
     foreach ($raw in $Arguments) {
-        $job = Open-Job (Resolve-AbsolutePath $raw)
+        $resolved = Resolve-AbsolutePath $raw
+        if ((Test-Path -LiteralPath $resolved -PathType Container) -and -not (Test-Path -LiteralPath (Join-Path $resolved 'job.txt') -PathType Leaf)) {
+            $nested = @(Find-Jobs $resolved)
+            if ($nested.Count -gt 0) {
+                foreach ($job in $nested) {
+                    $key = [IO.Path]::GetFullPath($job.path).ToLowerInvariant()
+                    if (-not $seen.ContainsKey($key)) {
+                        $seen[$key] = $true
+                        $jobs += $job
+                    }
+                }
+                continue
+            }
+        }
+        $job = Open-Job $resolved
         $key = [IO.Path]::GetFullPath($job.path).ToLowerInvariant()
         if (-not $seen.ContainsKey($key)) {
             $seen[$key] = $true
@@ -3569,6 +3694,52 @@ function Resolve-OutputPath {
     return (Test-OutputPath $requestedPath $Job $Extension)
 }
 
+function Publish-AndPurge {
+    param($Job, [string]$Output, $Config, $Logger)
+    $jobRoot = [IO.Path]::GetFullPath($Job.path)
+    $sep = [IO.Path]::DirectorySeparatorChar
+    $target = $Output
+    $inside = $false
+    try {
+        $outFull = [IO.Path]::GetFullPath($Output)
+        $inside = $outFull.Equals($jobRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $outFull.StartsWith($jobRoot + $sep, [System.StringComparison]::OrdinalIgnoreCase)
+    } catch { }
+
+    if ($inside) {
+        $outputRoot = [IO.Path]::GetFullPath($Config.output_dir)
+        if ($outputRoot.Equals($jobRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $outputRoot.StartsWith($jobRoot + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw [PipelineException]::new("output_dir must be outside the job folder: $outputRoot", 'Point output_dir at a separate folder, for example output.', 4)
+        }
+        if (-not (Test-Path -LiteralPath $Config.output_dir -PathType Container)) {
+            New-Item -ItemType Directory -Path $Config.output_dir -Force | Out-Null
+        }
+        $name = [IO.Path]::GetFileName($Output)
+        $target = Join-Path $Config.output_dir $name
+        $index = 1
+        while (Test-Path -LiteralPath $target) {
+            $target = Join-Path $Config.output_dir ([IO.Path]::GetFileNameWithoutExtension($name) + '_' + $index + [IO.Path]::GetExtension($name))
+            $index++
+        }
+        try {
+            Move-Item -LiteralPath $Output -Destination $target -Force -ErrorAction Stop
+        } catch {
+            throw [PipelineException]::new("Could not move the output to ${target}: $($_.Exception.Message)", 'The job folder was kept.', 7)
+        }
+        Write-Info ("Output moved: " + $target)
+    }
+
+    try {
+        $script:LogFile = ''
+        Remove-Item -LiteralPath $Job.path -Recurse -Force -ErrorAction Stop
+        Write-Info ("Removed work folder: " + $Job.path)
+    } catch {
+        Write-Info ("Could not remove the work folder " + $Job.path + ": " + $_.Exception.Message)
+    }
+    return $target
+}
+
 function Clear-Intermediates {
     param($Job)
     foreach ($name in @('frames', 'upscaled', 'sequence', 'chunks')) {
@@ -3577,6 +3748,118 @@ function Clear-Intermediates {
     }
     foreach ($batch in @(Get-ChildItem -LiteralPath $Job.path -Directory -Filter 'batch_*' -ErrorAction SilentlyContinue)) {
         Remove-Item -LiteralPath $batch.FullName -Recurse -Force
+    }
+}
+
+function Complete-ChunkedAssemble {
+    param(
+        $Job,
+        $Config,
+        $Options,
+        $Preset,
+        $Logger,
+        [bool]$DryRun = $false,
+        [bool]$MultipleJobs = $false
+    )
+
+    $media = Get-MediaInfo -Ffprobe $Config.ffprobe -Source (Get-JobSourcePath $Job) -Logger $Logger
+    $duration = ConvertTo-DoubleSafe (Get-JobValue $Job 'duration' $media.duration) $media.duration
+    $fps = ConvertTo-DoubleSafe (Get-JobValue $Job 'fps_decimal' $media.fps_decimal) $media.fps_decimal
+    $chunkSeconds = Get-JobInt $Job 'chunk_seconds' 0
+    if ($chunkSeconds -le 0) {
+        throw [PipelineException]::new("Chunked job has no chunk length: $([IO.Path]::GetFileName($Job.path))", 'Resume it with the run command.', 4)
+    }
+    $chunks = @(Get-ChunkPlan -Duration $duration -Fps $fps -ChunkSeconds $chunkSeconds)
+    $segments = @()
+    foreach ($chunk in $chunks) {
+        $segment = $null
+        foreach ($suffix in @('.ts', '.mov')) {
+            $candidate = Join-Path (Join-Path $Job.path 'chunks') ('chunk_{0:D4}{1}' -f $chunk.index, $suffix)
+            if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and (Get-Item -LiteralPath $candidate).Length -gt 0) {
+                $segment = $candidate
+                break
+            }
+        }
+        $marker = Join-Path $Job.path ('.done_chunk_{0:D4}' -f $chunk.index)
+        if (-not $segment -or -not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+            throw [PipelineException]::new("Chunk $($chunk.index) is incomplete: $([IO.Path]::GetFileName($Job.path))", 'Resume the job with the run command.', 4)
+        }
+        $segments += $segment
+    }
+    if ($segments.Count -eq 0) {
+        throw [PipelineException]::new("No chunk segments found: $($Job.path)", 'Resume the job with the run command.', 4)
+    }
+
+    $jobPreset = Resolve-Preset (Get-JobValue $Job 'preset' $Options.preset)
+    if ($jobPreset.codec -ne $Preset.codec) {
+        throw [PipelineException]::new("Chunked job was encoded as $($jobPreset.codec); use a matching preset instead of $($Preset.name).", $null, 4)
+    }
+    $firstInfo = Get-MediaInfo -Ffprobe $Config.ffprobe -Source $segments[0] -Logger $Logger
+    if ($firstInfo.duration -le 0 -or $firstInfo.width -le 0 -or $firstInfo.height -le 0) {
+        throw [PipelineException]::new("Invalid chunk segment: $($segments[0])", $null, 4)
+    }
+    $expectedWidth = $firstInfo.width
+    $expectedHeight = $firstInfo.height
+
+    $audioMode = if ($Options.audio) { $Options.audio } elseif ($Config.default_audio -ne 'auto') { $Config.default_audio } else { $Preset.default_audio }
+    $subsMode = if ($Options.subs) { $Options.subs } elseif ($Config.default_subs -ne 'auto') { $Config.default_subs } else { $Preset.default_subs }
+    $audioPlan = Get-AudioPlan -Media $media -Preset $Preset -Mode $audioMode -Bitrate $Options.audio_bitrate -AllAudio $Options.all_audio
+    $rangeStart = ConvertTo-DoubleSafe (Get-JobValue $Job 'range_start' 0.0) 0.0
+    if ($rangeStart -gt 0) {
+        $hasCopy = $false
+        foreach ($stream in $audioPlan.streams) { if ($stream.mode -eq 'copy') { $hasCopy = $true } }
+        if ($hasCopy) {
+            Write-Warn 'Trimming active: copied audio is re-encoded as AAC for a sample-accurate start.'
+            $newStreams = @()
+            foreach ($stream in $audioPlan.streams) {
+                if ($stream.mode -eq 'copy') { $newStreams += @{ source_index = $stream.source_index; mode = 'aac' } }
+                else { $newStreams += $stream }
+            }
+            $audioPlan = @{ streams = $newStreams; enabled = $audioPlan.enabled }
+        }
+        if ($media.chapters -gt 0) {
+            Write-Warn 'Chapters come from the source and may not be shifted for the trimmed range.'
+        }
+    }
+    $subtitlePlan = Get-SubtitlePlan -Media $media -Preset $Preset -Mode $subsMode -Logger $Logger
+    $finalOutput = Resolve-OutputPath -Job $Job -Extension $Preset.extension -Options $Options -MultipleJobs $MultipleJobs
+    if ($DryRun) {
+        Write-Info ("Would assemble chunked " + [IO.Path]::GetFileName($Job.path) + " (" + $segments.Count + ' segment(s)) -> ' + $finalOutput)
+        return $finalOutput
+    }
+    if ($Options.upscaled_dir) {
+        Write-Warn '--upscaled-dir is ignored for a chunked job.'
+    }
+
+    $tempOutput = Join-Path (Split-Path -Parent $finalOutput) ([IO.Path]::GetFileNameWithoutExtension($finalOutput) + '.partial' + [IO.Path]::GetExtension($finalOutput))
+    $reportOutput = Split-Path -Parent $finalOutput
+    if (-not (Test-Path -LiteralPath $reportOutput)) { New-Item -ItemType Directory -Path $reportOutput -Force | Out-Null }
+    try {
+        Clear-JobMarker $Job 'assemble'
+        $concatName = if ([IO.Path]::GetExtension($segments[0]).ToLowerInvariant() -eq '.mov') { 'concat.mov' } else { 'concat.ts' }
+        $concatOutput = Invoke-ConcatSegments -Ffmpeg $Config.ffmpeg -Segments $segments -Output (Join-Path (Join-Path $Job.path 'chunks') $concatName) -Logger $Logger
+        $mux = Build-MuxCommand -Job $Job -Media $media -Preset $Preset -AudioPlan $audioPlan -SubtitlePlan $subtitlePlan -Options $Options -ConcatVideo $concatOutput -Output $tempOutput -Duration $duration
+        $mux[0] = $Config.ffmpeg
+        Invoke-Child -Arguments $mux | Out-Null
+        Repair-ColorTags -Ffmpeg $Config.ffmpeg -Ffprobe $Config.ffprobe -Path $tempOutput -Container $Preset.container -Logger $Logger
+        Test-Output -Ffprobe $Config.ffprobe -Output $tempOutput -Job $Job -Media $media -Options $Options -ExpectedWidth $expectedWidth -ExpectedHeight $expectedHeight -ExpectedAudio $audioPlan.enabled -ExpectedSubs $subtitlePlan.streams.Count -Logger $Logger
+        Move-Item -LiteralPath $tempOutput -Destination $finalOutput -Force
+        if (-not $Options.keep_chunks) {
+            $chunksDir = Join-Path $Job.path 'chunks'
+            if (Test-Path -LiteralPath $chunksDir) { Remove-Item -LiteralPath $chunksDir -Recurse -Force }
+        }
+        Set-JobValue $Job 'preset' $Preset.name
+        Set-JobValue $Job 'encoder' $Options.encoder
+        Set-JobValue $Job 'audio' $audioMode
+        Set-JobValue $Job 'subs' $subsMode
+        Set-JobValue $Job 'last_error' ''
+        Save-Job $Job
+        Set-JobMarker $Job 'assemble'
+        if ($Options.cleanup) { $finalOutput = Publish-AndPurge $Job $finalOutput $Config $Logger }
+        return $finalOutput
+    } catch {
+        if (Test-Path -LiteralPath $tempOutput) { Remove-Item -LiteralPath $tempOutput -Force -ErrorAction SilentlyContinue }
+        throw
     }
 }
 
@@ -3603,7 +3886,8 @@ function Invoke-Assemble {
             }
             $chunkMarkers = @(Get-ChildItem -LiteralPath $job.path -Filter '.done_chunk_*' -File -Force -ErrorAction SilentlyContinue)
             if ($chunkMarkers.Count -gt 0) {
-                throw [PipelineException]::new("Job is chunked: $([IO.Path]::GetFileName($job.path))", 'Resume it with the run command.', 4)
+                $outputs += (Complete-ChunkedAssemble -Job $job -Config $Config -Options $jobOptions -Preset $preset -Logger $Logger -DryRun $DryRun -MultipleJobs $multiple)
+                continue
             }
             $media = Get-MediaInfo -Ffprobe $Config.ffprobe -Source (Get-JobSourcePath $job) -Logger $Logger
             $upscaledDir = if ($Options.upscaled_dir) {
@@ -3717,7 +4001,7 @@ function Invoke-Assemble {
             Set-JobValue $job 'last_error' ''
             Save-Job $job
             Set-JobMarker $job 'assemble'
-            if ($Options.cleanup) { Clear-Intermediates $job }
+            if ($Options.cleanup) { $finalOutput = Publish-AndPurge $job $finalOutput $Config $Logger }
             $outputs += $finalOutput
         } catch {
             if ($tempOutput -and (Test-Path -LiteralPath $tempOutput)) {
@@ -4062,6 +4346,90 @@ function Write-MenuError {
     else { [Console]::Out.WriteLine($ex.Message) }
 }
 
+function Select-Model {
+    param($Config, $Logger)
+    $modelHints = @{
+        'upscayl-standard-4x' = 'general-purpose default'
+        'upscayl-lite-4x' = 'fastest, good for long videos'
+        'remacri-4x' = 'live-action detail'
+        'ultramix-balanced-4x' = 'balanced live-action'
+        'ultrasharp-4x' = 'sharp; may over-sharpen compressed sources'
+        'high-fidelity-4x' = 'conservative, less hallucination'
+        'digital-art-4x' = 'anime and illustrations'
+    }
+    $choices = New-Object System.Collections.ArrayList
+    $seen = @{}
+    $addDirectory = {
+        param($Directory)
+        if (-not $Directory) { return }
+        try {
+            foreach ($model in @(Get-ModelList $Directory)) {
+                if ($seen.ContainsKey($model.name)) { continue }
+                $seen[$model.name] = $true
+                [void]$choices.Add(@{ name = $model.name; dir = $Directory })
+            }
+        } catch { }
+    }
+    try {
+        $paths = Get-UpscaylPaths $Config
+        & $addDirectory $paths.models_dir
+        $standard = Join-Path (Split-Path -Parent (Split-Path -Parent $paths.binary)) 'models'
+        if (Test-Path -LiteralPath $standard -PathType Container) { & $addDirectory $standard }
+    } catch { }
+    if ($Config.models_dir) { & $addDirectory $Config.models_dir }
+    if ($Config.upscayl_bin) {
+        $standard = Join-Path (Split-Path -Parent (Split-Path -Parent $Config.upscayl_bin)) 'models'
+        if (Test-Path -LiteralPath $standard -PathType Container) { & $addDirectory $standard }
+    }
+    if ($choices.Count -eq 0) {
+        return @{ name = (Ask-Value 'Model' $Config.default_model); dir = $null }
+    }
+    Write-Info 'Models:'
+    for ($i = 0; $i -lt $choices.Count; $i++) {
+        $hint = if ($modelHints.ContainsKey($choices[$i].name)) { $modelHints[$choices[$i].name] } else { 'custom' }
+        Write-Info ("  " + ($i + 1) + ') ' + $choices[$i].name + ' - ' + $hint)
+        Write-Info ('     ' + $choices[$i].dir)
+    }
+    $names = @($choices | ForEach-Object { $_.name })
+    $defaultName = if ($names -contains $Config.default_model) { $Config.default_model } else { $choices[0].name }
+    $answer = Ask-Value 'Model number or name' $defaultName
+    $number = 0
+    if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $choices.Count) {
+        return $choices[$number - 1]
+    }
+    foreach ($choice in $choices) {
+        if ($choice.name -eq $answer) { return $choice }
+    }
+    return @{ name = $answer; dir = $null }
+}
+
+function Select-Jobs {
+    param($Config, $Logger)
+    $target = Ask-Value 'Job folder or work dir' ''
+    if (-not $target) { return @() }
+    $path = Resolve-AbsolutePath $target
+    if (Test-Path -LiteralPath (Join-Path $path 'job.txt') -PathType Leaf) {
+        return @(Resolve-Jobs -Arguments @($path) -Config $Config -AllJobs $false)
+    }
+    $jobs = @(Find-Jobs $path)
+    if ($jobs.Count -eq 0) {
+        Write-Info ("No jobs found in: " + $path)
+        return @()
+    }
+    Write-Info 'Jobs:'
+    for ($i = 0; $i -lt $jobs.Count; $i++) {
+        Write-Info ("  " + ($i + 1) + ') ' + [IO.Path]::GetFileName($jobs[$i].path) + ' <- ' + (Get-JobSourcePath $jobs[$i]))
+    }
+    $answer = (Ask-Value "Job number or 'a' for all" 'a').ToLowerInvariant()
+    if (@('a', 'all') -contains $answer) { return $jobs }
+    $number = 0
+    if ([int]::TryParse($answer, [ref]$number) -and $number -ge 1 -and $number -le $jobs.Count) {
+        return @($jobs[$number - 1])
+    }
+    Write-Info 'Invalid job selection.'
+    return @()
+}
+
 function Invoke-Menu {
     param($Config, $Logger)
     while ($true) {
@@ -4097,7 +4465,25 @@ function Invoke-Menu {
             if ($choice -eq '1') {
                 $target = Ask-Value 'Video file or folder'
                 if (-not $target) { continue }
-                $model = Ask-Value 'Model' $Config.default_model
+                $inputs = Resolve-Inputs -Arguments @($target) -Config $Config -Recursive $false
+                try {
+                    $firstMedia = Get-MediaInfo -Ffprobe $Config.ffprobe -Source $inputs[0] -Logger $Logger
+                } catch {
+                    [Console]::Out.WriteLine((Get-PipelineException $_).Message)
+                    continue
+                }
+                $tonemap = $false
+                if ($firstMedia.hdr) {
+                    $answer = (Ask-Value 'HDR source detected; tonemap to SDR BT.709? y/N' 'n').ToLowerInvariant()
+                    if (@('y', 'yes') -notcontains $answer) {
+                        [Console]::Out.WriteLine('Aborted: HDR requires --tonemap.')
+                        continue
+                    }
+                    $tonemap = $true
+                }
+                $modelChoice = Select-Model $Config $Logger
+                $model = $modelChoice.name
+                $modelDir = $modelChoice.dir
                 $preset = Ask-Value ('Preset ' + (((Get-Presets).Keys | Sort-Object) -join '/')) $Config.default_preset
                 if (-not (Get-Presets).ContainsKey($preset)) {
                     [Console]::Out.WriteLine('Unknown preset.')
@@ -4105,20 +4491,21 @@ function Invoke-Menu {
                 }
                 $audio = Ask-Value 'Audio auto/copy/aac/pcm/none' 'auto'
                 $subs = Ask-Value 'Subtitles auto/copy/convert/none' 'auto'
-                $cleanup = @('y', 'yes') -contains (Ask-Value 'Delete intermediates after success? y/N' 'n').ToLowerInvariant()
+                $cleanupDefault = if ($Config.cleanup) { 'y' } else { 'n' }
+                $cleanup = @('y', 'yes') -contains (Ask-Value 'Delete intermediates after success? y/N' $cleanupDefault).ToLowerInvariant()
                 $scale = $Config.default_scale
                 $split = @{
                     fps = $null; start = $null; end = $null; format = 'png';
                     jpeg_quality = 1; png_compression = 3; denoise = 'none';
-                    tonemap = $false; decode = 'auto'; scale = $scale;
+                    tonemap = $tonemap; decode = 'auto'; scale = $scale;
                     target_height = $null; model = $model; verify_frames = $false;
                     recursive = $false; force = $false
                 }
                 $upscale = @{
                     model = $model; scale = $scale; gpu = 0; tile = 'auto';
                     batch_size = 0; threads = '1:2:2'; icd = $null;
-                    upscayl_bin = $null; models_dir = $null; upscaled_dir = $null;
-                    retry = 1; force = $false
+                    upscayl_bin = $null; models_dir = $(if ($modelDir) { $modelDir } else { $null }); upscaled_dir = $null;
+                    retry = 1; force = $false; assume_yes = $false
                 }
                 $encode = @{
                     preset = $preset; encoder = $Config.default_encoder; quality = 'balanced';
@@ -4129,7 +4516,6 @@ function Invoke-Menu {
                     output = $null; upscaled_dir = $null; pick = 'error';
                     verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
                 }
-                $inputs = Resolve-Inputs -Arguments @($target) -Config $Config -Recursive $false
                 $null = Invoke-RunAll -Inputs $inputs -Config $Config -Options @{
                     split = $split; upscale = $upscale; encode = $encode;
                     cleanup = $cleanup; stop_on_error = $false; chunk_seconds = 'auto'
@@ -4158,26 +4544,28 @@ function Invoke-Menu {
                 $inputs = Resolve-Inputs -Arguments @($target) -Config $Config -Recursive $false
                 $null = Invoke-Split -Inputs $inputs -Config $Config -Options $options -Logger $Logger
             } elseif ($choice -eq '3') {
-                $jobPath = Ask-Value 'Job folder'
-                if (-not $jobPath) { continue }
-                $model = Ask-Value 'Model' $Config.default_model
+                $jobs = @(Select-Jobs $Config $Logger)
+                if ($jobs.Count -eq 0) { continue }
+                $modelChoice = Select-Model $Config $Logger
+                $model = $modelChoice.name
+                $modelDir = $modelChoice.dir
                 $scaleText = Ask-Value 'Scale 2/3/4' ([string]$Config.default_scale)
                 $scale = 0
                 if (-not [int]::TryParse($scaleText, [ref]$scale) -or @(2, 3, 4) -notcontains $scale) {
                     [Console]::Out.WriteLine('Scale must be 2, 3, or 4.')
                     continue
                 }
-                $jobs = Resolve-Jobs -Arguments @($jobPath) -Config $Config -AllJobs $false
+                Write-Info 'Note: upscale writes frames only; audio and subtitles are muxed by Assemble or Run all.'
                 $options = @{
                     model = $model; scale = $scale; gpu = 0; tile = 'auto';
                     batch_size = 0; threads = '1:2:2'; icd = $null;
-                    upscayl_bin = $null; models_dir = $null; upscaled_dir = $null;
-                    retry = 1; force = $false
+                    upscayl_bin = $null; models_dir = $(if ($modelDir) { $modelDir } else { $null }); upscaled_dir = $null;
+                    retry = 1; force = $false; assume_yes = $false
                 }
                 $null = Invoke-Upscale -Jobs $jobs -Config $Config -Options $options -Logger $Logger
             } elseif ($choice -eq '4') {
-                $jobPath = Ask-Value 'Job folder'
-                if (-not $jobPath) { continue }
+                $jobs = @(Select-Jobs $Config $Logger)
+                if ($jobs.Count -eq 0) { continue }
                 $preset = Ask-Value ('Preset ' + (((Get-Presets).Keys | Sort-Object) -join '/')) $Config.default_preset
                 if (-not (Get-Presets).ContainsKey($preset)) {
                     [Console]::Out.WriteLine('Unknown preset.')
@@ -4198,7 +4586,6 @@ function Invoke-Menu {
                     output = $null; upscaled_dir = $null; pick = 'error';
                     verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
                 }
-                $jobs = Resolve-Jobs -Arguments @($jobPath) -Config $Config -AllJobs $false
                 $null = Invoke-Assemble -Jobs $jobs -Config $Config -Options $options -Logger $Logger
             } elseif ($choice -eq '5') {
                 Invoke-Status -Config $Config -Logger $Logger
@@ -4259,6 +4646,7 @@ function Get-CommandOptionsSpec {
     param([string]$Command)
     $spec = @{
         'work-dir' = @{ kind = 'value' }
+        'output-dir' = @{ kind = 'value' }
         'config'   = @{ kind = 'value' }
         'ffmpeg'   = @{ kind = 'value' }
         'ffprobe'  = @{ kind = 'value' }
@@ -4267,6 +4655,8 @@ function Get-CommandOptionsSpec {
         'yes'      = @{ kind = 'flag' }
         'force'    = @{ kind = 'flag' }
         'dry-run'  = @{ kind = 'flag' }
+        'max-work-gb' = @{ kind = 'value'; int = $true }
+        'min-free-gb' = @{ kind = 'value'; int = $true }
         'help'     = @{ kind = 'flag' }
         'version'  = @{ kind = 'flag' }
     }
@@ -4363,6 +4753,7 @@ function Get-CommandOptionsSpec {
             & $add 'output' 'value'
             & $add 'pick' 'value' $null @('error', 'newest', 'largest')
             & $add 'allow-huge' 'flag'
+            & $add 'keep-chunks' 'flag'
             & $add 'stop-on-error' 'flag'
             & $add 'chunk-seconds' 'value'
         }
@@ -4466,7 +4857,7 @@ function Get-OptionValue {
 function Invoke-Main {
     param([string[]]$Argv)
 
-    $globalValueOptions = @('work-dir', 'config', 'ffmpeg', 'ffprobe')
+    $globalValueOptions = @('work-dir', 'output-dir', 'config', 'ffmpeg', 'ffprobe')
     $globalFlagOptions = @('verbose', 'quiet', 'yes', 'force', 'dry-run')
     $command = $null
     $commandIndex = -1
@@ -4552,7 +4943,7 @@ function Invoke-Main {
 
     $logger = New-Logger -VerboseOutput ([bool]$opts.ContainsKey('verbose')) -Quiet ([bool]$opts.ContainsKey('quiet'))
     $overrides = @{}
-    foreach ($key in @('work_dir', 'ffmpeg', 'ffprobe')) {
+    foreach ($key in @('work_dir', 'output_dir', 'ffmpeg', 'ffprobe', 'max_work_gb', 'min_free_gb')) {
         if ($opts.ContainsKey($key)) { $overrides[$key] = [string]$opts[$key] }
     }
     $config = Get-Config -ConfigPath $(if ($opts.ContainsKey('config')) { $opts['config'] } else { $null }) -Overrides $overrides -ToolDir $script:ToolDir
@@ -4599,6 +4990,7 @@ function Invoke-Main {
             upscaled_dir = $(if ($opts.ContainsKey('upscaled_dir')) { $opts['upscaled_dir'] } else { $null })
             retry = (Get-OptionValue $opts 'retry' 1)
             force = $force
+            assume_yes = $yes
         }
         $result = @(Invoke-Upscale -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun)
         Write-Info ("Upscaled " + $result.Count + ' job(s)')
@@ -4606,6 +4998,9 @@ function Invoke-Main {
     }
 
     if ($command -eq 'assemble') {
+        if ($opts.ContainsKey('quality') -and $opts.ContainsKey('crf')) {
+            throw [PipelineException]::new('--quality and --crf are mutually exclusive.', $null, 4)
+        }
         if ($opts.ContainsKey('tonemap')) {
             throw [PipelineException]::new('--tonemap is a split-stage option; re-split with --tonemap instead.', $null, 4)
         }
@@ -4636,6 +5031,9 @@ function Invoke-Main {
     }
 
     if ($command -eq 'run') {
+        if ($opts.ContainsKey('quality') -and $opts.ContainsKey('crf')) {
+            throw [PipelineException]::new('--quality and --crf are mutually exclusive.', $null, 4)
+        }
         $inputs = Resolve-Inputs -Arguments $parsed.positionals -Config $config -Recursive $opts.ContainsKey('recursive')
         $split = @{
             fps = (Get-OptionValue $opts 'fps' $null)
@@ -4667,7 +5065,9 @@ function Invoke-Main {
             upscaled_dir = $(if ($opts.ContainsKey('upscaled_dir')) { $opts['upscaled_dir'] } else { $null })
             retry = (Get-OptionValue $opts 'retry' 1)
             force = $force
+            assume_yes = $yes
         }
+        $runCleanup = $opts.ContainsKey('cleanup') -or $config.cleanup
         $encode = @{
             preset = $(if ($opts.ContainsKey('preset')) { $opts['preset'] } else { $config.default_preset })
             encoder = $(if ($opts.ContainsKey('encoder')) { $opts['encoder'] } else { $config.default_encoder })
@@ -4679,20 +5079,20 @@ function Invoke-Main {
             subs = (Get-OptionValue $opts 'subs' $null)
             ten_bit = $opts.ContainsKey('ten_bit')
             target_height = (Get-OptionValue $opts 'target_height' $null)
-            cleanup = $opts.ContainsKey('cleanup')
+            cleanup = $runCleanup
             output = $(if ($opts.ContainsKey('output')) { $opts['output'] } else { $null })
             upscaled_dir = $(if ($opts.ContainsKey('upscaled_dir')) { $opts['upscaled_dir'] } else { $null })
             pick = (Get-OptionValue $opts 'pick' 'error')
             verify_frames = $opts.ContainsKey('verify_frames')
             allow_huge = $opts.ContainsKey('allow_huge')
             force = $force
-            keep_chunks = $false
+            keep_chunks = $opts.ContainsKey('keep_chunks')
         }
         $results = Invoke-RunAll -Inputs $inputs -Config $config -Options @{
             split = $split; upscale = $upscale; encode = $encode;
-            cleanup = $encode.cleanup; stop_on_error = $opts.ContainsKey('stop_on_error');
+            cleanup = $runCleanup; stop_on_error = $opts.ContainsKey('stop_on_error');
             chunk_seconds = (Get-OptionValue $opts 'chunk_seconds' 'auto')
-        } -Logger $logger
+        } -Logger $logger -DryRun $dryRun
         $failed = @($results | Where-Object { $_.error })
         if ($failed.Count -gt 0) { return 1 }
         return 0
@@ -4742,9 +5142,3 @@ try {
     if ($script:Verbose -or $env:UPSCAYL_V2_DEBUG -eq '1') { Write-Err ($_ | Out-String); Write-Err $_.ScriptStackTrace }
     exit 1
 }
-
-
-
-
-
-

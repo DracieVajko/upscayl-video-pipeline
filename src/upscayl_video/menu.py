@@ -1,12 +1,17 @@
-"""Small interactive menu for the core pipeline."""
+﻿"""Small interactive menu for the core pipeline."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from .config import Config
 from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError
+from .probe import probe_media
+from .upscayl import discover_upscayl, list_models
 from .pipeline import (
+    find_jobs,
     RunOptions,
     SplitOptions,
     UpscaleOptions,
@@ -33,6 +38,92 @@ def _catch(logger: Logger, action) -> None:
         action()
     except PipelineError as exc:
         print(str(exc))
+
+
+_MODEL_HINTS = {
+    "upscayl-standard-4x": "general-purpose default",
+    "upscayl-lite-4x": "fastest, good for long videos",
+    "remacri-4x": "live-action detail",
+    "ultramix-balanced-4x": "balanced live-action",
+    "ultrasharp-4x": "sharp; may over-sharpen compressed sources",
+    "high-fidelity-4x": "conservative, less hallucination",
+    "digital-art-4x": "anime and illustrations",
+}
+
+
+def _select_model(config: Config, logger: Logger) -> tuple[str, str | None]:
+    choices: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add_directory(directory) -> None:
+        if directory is None:
+            return
+        try:
+            models = list_models(directory)
+        except PipelineError:
+            return
+        for model in models:
+            if model.name not in seen:
+                seen.add(model.name)
+                choices.append((model.name, str(directory)))
+
+    try:
+        paths = discover_upscayl(config)
+        add_directory(paths.models_dir)
+        standard = paths.binary.parent.parent / "models"
+        if standard.is_dir():
+            add_directory(standard)
+    except PipelineError:
+        pass
+    if config.models_dir is not None:
+        add_directory(config.models_dir)
+    if config.upscayl_bin is not None:
+        add_directory(config.upscayl_bin.parent.parent / "models")
+
+    if not choices:
+        return _ask("Model", config.default_model), None
+
+    print("Models:")
+    for index, (name, directory) in enumerate(choices, 1):
+        hint = _MODEL_HINTS.get(name, "custom")
+        print(f"  {index}) {name} - {hint}")
+        print(f"     {directory}")
+    names = {name for name, _ in choices}
+    default_name = config.default_model if config.default_model in names else choices[0][0]
+    answer = _ask("Model number or name", default_name)
+    if answer.isdigit():
+        index = int(answer)
+        if 1 <= index <= len(choices):
+            return choices[index - 1]
+    for name, directory in choices:
+        if answer.lower() == name.lower():
+            return name, directory
+    return answer, None
+
+
+def _select_jobs(config: Config, logger: Logger) -> list:
+    target = _ask("Job folder or work dir")
+    if not target:
+        return []
+    path = Path(target).expanduser().resolve()
+    if (path / "job.txt").is_file():
+        return resolve_jobs([str(path)], config, all_jobs=False)
+    jobs = find_jobs(path)
+    if not jobs:
+        print(f"No jobs found in: {path}")
+        return []
+    print("Jobs:")
+    for index, job in enumerate(jobs, 1):
+        print(f"  {index}) {job.job_id} <- {job.source_path}")
+    answer = _ask("Job number or 'a' for all", "a").lower()
+    if answer in {"a", "all"}:
+        return jobs
+    if answer.isdigit():
+        index = int(answer)
+        if 1 <= index <= len(jobs):
+            return [jobs[index - 1]]
+    print("Invalid job selection.")
+    return []
 
 
 def run_menu(config: Config | None, logger: Logger) -> int:
@@ -70,23 +161,43 @@ def run_menu(config: Config | None, logger: Logger) -> int:
                 target = _ask("Video file or folder")
                 if not target:
                     return
-                model = _ask("Model", config.default_model)
+                inputs = resolve_inputs([target], config, recursive=False)
+                try:
+                    first_media = probe_media(config.ffprobe, inputs[0], logger)
+                except PipelineError as exc:
+                    print(str(exc))
+                    return
+                tonemap = False
+                if first_media.hdr:
+                    answer = _ask(
+                        "HDR source detected; tonemap to SDR BT.709? y/N", "n"
+                    ).lower()
+                    if answer not in {"y", "yes"}:
+                        print("Aborted: HDR requires --tonemap.")
+                        return
+                    tonemap = True
+                model, model_dir = _select_model(config, logger)
                 preset = _ask("Preset " + "/".join(sorted(PRESETS)), config.default_preset)
                 if preset not in PRESETS:
                     print("Unknown preset.")
                     return
                 audio = _ask("Audio auto/copy/aac/pcm/none", "auto")
                 subs = _ask("Subtitles auto/copy/convert/none", "auto")
-                cleanup = _ask("Delete intermediates after success? y/N", "n").lower() in {"y", "yes"}
+                cleanup = _ask("Delete intermediates after success? y/N", "y" if config.cleanup else "n").lower() in {"y", "yes"}
                 scale = config.default_scale
                 split = SplitOptions(
                     fps=None, start=None, end=None, format="png",
                     jpeg_quality=1, png_compression=3, denoise="none",
-                    tonemap=False, decode="auto", scale=scale,
+                    tonemap=tonemap, decode="auto", scale=scale,
                     target_height=None, model=model, verify_frames=False,
                     recursive=False, force=False,
                 )
-                upscale = UpscaleOptions(model=model, scale=scale)
+                upscale = UpscaleOptions(
+                    model=model,
+                    scale=scale,
+                    models_dir=Path(model_dir) if model_dir else None,
+                    assume_yes=False,
+                )
                 encode = EncodeOptions(
                     preset=preset,
                     encoder=config.default_encoder,
@@ -140,29 +251,37 @@ def run_menu(config: Config | None, logger: Logger) -> int:
             _catch(logger, action)
         elif choice == "3":
             def action() -> None:
-                job_path = _ask("Job folder")
-                if not job_path:
+                jobs = _select_jobs(config, logger)
+                if not jobs:
                     return
-                model = _ask("Model", config.default_model)
+                model, model_dir = _select_model(config, logger)
                 scale_text = _ask("Scale 2/3/4", str(config.default_scale))
                 try:
                     scale = int(scale_text)
                 except ValueError:
                     print("Scale must be 2, 3, or 4.")
                     return
-                jobs = resolve_jobs([job_path], config, all_jobs=False)
+                print(
+                    "Note: upscale writes frames only; audio and subtitles "
+                    "are muxed by Assemble or Run all."
+                )
                 run_upscale(
                     jobs,
                     config,
-                    UpscaleOptions(model=model, scale=scale),
+                    UpscaleOptions(
+                        model=model,
+                        scale=scale,
+                        models_dir=Path(model_dir) if model_dir else None,
+                        assume_yes=False,
+                    ),
                     logger,
                 )
 
             _catch(logger, action)
         elif choice == "4":
             def action() -> None:
-                job_path = _ask("Job folder")
-                if not job_path:
+                jobs = _select_jobs(config, logger)
+                if not jobs:
                     return
                 preset = _ask("Preset " + "/".join(sorted(PRESETS)), config.default_preset)
                 if preset not in PRESETS:
@@ -180,7 +299,6 @@ def run_menu(config: Config | None, logger: Logger) -> int:
                     audio=None if audio == "auto" else audio,
                     subs=None if subs == "auto" else subs,
                 )
-                jobs = resolve_jobs([job_path], config, all_jobs=False)
                 run_assemble(jobs, config, options, logger)
 
             _catch(logger, action)

@@ -18,6 +18,10 @@ v2\windows\UpscaylVideo.bat <command> [options]
 bash v2/unix/upscayl-video.sh <command> [options]
 ```
 
+V1 is the repository root. V2 is optional and lives in `v2/`; delete that
+folder if you only use V1. Both versions read `config.txt` from the repository
+root and share `work/`, so on Windows either one can finish the other's jobs.
+
 ## Requirements
 
 - **V1:** Python 3.10 or newer.
@@ -54,9 +58,10 @@ upscayl-video assemble "D:\UpscaylVideo\clip" --preset mp4-h264 --encoder auto
 upscayl-video doctor [--skip-upscayl-smoke] [--verbose]
 ```
 
-Checks FFmpeg/ffprobe versions, available encoders, `zscale`, and the work
-directory. Exit codes: `0` OK, `3` a required tool is missing, `5` too little
-free space. Upscayl checks are added with the automated upscale stage.
+Checks FFmpeg/ffprobe versions, available encoders, `zscale`, the work
+directory, Upscayl, the model directory, and a one-frame smoke encode where
+possible. Exit codes: `0` OK, `3` a required tool is missing, `5` too little
+free space.
 
 ### `split`
 
@@ -117,8 +122,12 @@ upscayl-video assemble <job...> [--all] \
   which is deleted after a successful encode.
 - A trimmed job (`--start`/`--end`) seeks the source audio and subtitles too.
   Copied audio is re-encoded as AAC when a trim is active.
-- `--cleanup` deletes `frames/`, `upscaled/`, and `sequence/` after a
-  successful assemble. The output is kept.
+- `--cleanup` moves the final video to `output_dir` (default `output` next to
+  `config.txt`) and then deletes the whole `work/<job>` folder, leaving `work/`
+  empty. The source video is never touched. Use `--output-dir DIR` to choose a
+  different destination.
+- `--quality` and `--crf` are mutually exclusive; passing both exits with
+  code 4.
 - `--tonemap` is rejected: tonemapping belongs to the split stage.
 
 ### `upscale`
@@ -133,20 +142,26 @@ upscayl-video upscale <job...> [--all] \
 
 Runs Upscayl's CLI in bounded batches, restarting the process after each batch
 to avoid its memory leak. Missing frames are retried; existing valid outputs
-are skipped. `auto` tile uses VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
+are skipped. Accepts one job folder or the work directory. `auto` tile uses
+VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
 `--icd auto` finds the NVIDIA Vulkan ICD on Windows; this is the workaround for
-the AMD `vkEnumeratePhysicalDevices failed 5` error.
+the AMD `vkEnumeratePhysicalDevices failed 5` error. If the projected time
+exceeds one hour, the command asks for confirmation; `--yes` skips the prompt.
 
 ### `run`
 
 ```bash
 upscayl-video run <video...> [split/upscale/assemble options] \
-  [--chunk-seconds auto|0|N] [--stop-on-error] [--cleanup]
+  [--chunk-seconds auto|0|N] [--keep-chunks] [--stop-on-error] [--cleanup] \
+  [--max-work-gb N] [--min-free-gb N] [--yes]
 ```
 
 One command per video: split → upscale → assemble. Continues to the next input
-after a failure unless `--stop-on-error`. `--cleanup` removes intermediates
-after success.
+after a failure unless `--stop-on-error`. `--cleanup` moves the video to
+`output_dir` and removes the job folder after success; `--keep-chunks` keeps
+per-chunk intermediates.
+`--quality` and `--crf` are mutually exclusive. `--max-work-gb` and
+`--min-free-gb` override the disk guards from `config.txt`.
 
 ### Chunking
 
@@ -155,8 +170,13 @@ encodes each chunk separately, concatenates the video-only segments, then muxes
 the original audio/subtitles. Chunk intermediates are deleted after each chunk
 unless `--keep-chunks`. A completed chunk is skipped on resume.
 
-`--chunk-seconds auto` currently uses the non-chunked path; use an explicit
-value (for example `60`) to enable chunking.
+`--chunk-seconds auto` enables 60-second chunks when the sample-based estimate
+exceeds `max_work_gb` or would leave less than `min_free_gb`. Use an explicit
+value to force a different chunk length. Values below 10 are clamped to 10 with
+a warning.
+
+`assemble <job>` also finishes a chunked job whose segments are still present;
+it concatenates the segments and muxes the source audio/subtitles.
 
 ### `status`
 
@@ -181,6 +201,10 @@ video is never deleted. A job outside the work directory is refused.
 
 ## Job folder
 
+`upscale` and `assemble` accept a job folder or the work directory. Passing the
+work directory selects every job; the interactive menu lists the jobs and lets
+you choose one or all.
+
 ```
 work/<job_id>/
   job.txt
@@ -199,25 +223,34 @@ versions; do not edit it while a stage is running.
 
 ## Configuration
 
-Copy `config.example.txt` to `config.txt` next to the tool and adjust:
+Copy `config.example.txt` to `config.txt` in the repository root and adjust.
+Both V1 and V2 read this file:
 
 ```ini
 ffmpeg=C:\FFMPEG\ffmpeg.exe
 ffprobe=C:\FFMPEG\ffprobe.exe
+upscayl_bin=C:\Program Files\Upscayl\resources\bin\upscayl-bin.exe
+models_dir=D:\AI\UpscaylModels\models
 work_dir=D:\UpscaylVideo
+output_dir=D:\UpscaylVideo\output
 default_model=upscayl-standard-4x
 default_scale=2
 default_preset=mp4-h264
 default_encoder=auto
 default_audio=auto
 default_subs=auto
+tile=auto
+batch_size=100
+gpu=0
+icd=auto
 min_free_gb=5
 max_work_gb=40
 cleanup=0
 ```
 
 CLI flags override the file. Relative paths in `config.txt` are relative to the
-config file.
+config file. `models_dir` must point at a folder named `models` containing
+matching `.param`/`.bin` pairs.
 
 ## Exit codes
 
@@ -239,7 +272,9 @@ config file.
 1. `split` the video.
 2. In Upscayl, select `work/<job>/frames` as the input folder.
 3. Select `work/<job>/upscaled` as the output folder.
-4. Choose the model and scale, then run the batch.
+4. Choose the model and scale, then run the batch. Custom models must live in a
+   folder named `models`; point `models_dir` at it and the menu lists them next
+   to the standard models.
 5. `assemble work/<job>`.
 
 Upscayl may create a model-specific subfolder or append a suffix to filenames;
@@ -248,8 +283,8 @@ the assembler accepts both. If two files map to the same frame index, use
 
 ## Known limitations
 
-- Chunking driven by `auto` uses the non-chunked path; use an explicit
-  `--chunk-seconds N`.
+- Upscayl requires the model directory to be named `models`; point
+  `models_dir` at such a folder when using custom models.
 - V2 bash was validated on Git Bash for Windows; native Linux/macOS execution
   is not part of the recorded validation yet. macOS bash 3.2 syntax constraints
   are observed.

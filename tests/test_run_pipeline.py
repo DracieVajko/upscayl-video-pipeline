@@ -10,6 +10,7 @@ from upscayl_video.pipeline import (
     RunOptions,
     SplitOptions,
     UpscaleOptions,
+    _auto_chunk_seconds,
     run_all,
 )
 from upscayl_video.util import Logger
@@ -72,6 +73,61 @@ class TestRun(unittest.TestCase):
             results = run_all([self.a, self.b], cfg, options, Logger(quiet=True))
         self.assertEqual(len(results), 2)
         self.assertTrue(all(result.output and result.output.exists() for result in results))
+
+    def test_auto_chunk_uses_cap(self):
+        cfg = load_config(None, overrides={
+            "ffmpeg": self.ffmpeg,
+            "ffprobe": self.ffprobe,
+            "work_dir": str(self.root / "work-auto"),
+            "upscayl_bin": str(self.binary),
+            "models_dir": str(self.models),
+            "max_work_gb": "1",
+            "min_free_gb": "0",
+        })
+        options = RunOptions(
+            split=SplitOptions(
+                fps=None, start=None, end=None, format="png", jpeg_quality=1,
+                png_compression=3, denoise="none", tonemap=False, decode="cpu",
+                scale=2, target_height=None, model="m", verify_frames=False,
+                recursive=False, force=False,
+            ),
+            upscale=UpscaleOptions(model="m", scale=2, tile="128", batch_size=2),
+            encode=EncodeOptions(encoder="cpu", preset="mp4-h264", audio="copy"),
+            cleanup=False,
+            stop_on_error=False,
+            chunk_seconds="auto",
+        )
+        seconds = _auto_chunk_seconds(self.a, cfg, options, Logger(quiet=True))
+        self.assertEqual(seconds, 60)
+
+    def test_run_dry_run_creates_no_job(self):
+        work = self.root / "work-dry"
+        cfg = load_config(None, overrides={
+            "ffmpeg": self.ffmpeg,
+            "ffprobe": self.ffprobe,
+            "work_dir": str(work),
+            "upscayl_bin": str(self.binary),
+            "models_dir": str(self.models),
+        })
+        options = RunOptions(
+            split=SplitOptions(
+                fps=None, start=None, end=None, format="png", jpeg_quality=1,
+                png_compression=3, denoise="none", tonemap=False, decode="cpu",
+                scale=2, target_height=None, model="m", verify_frames=False,
+                recursive=False, force=False,
+            ),
+            upscale=UpscaleOptions(model="m", scale=2, tile="128", batch_size=2),
+            encode=EncodeOptions(encoder="cpu", preset="mp4-h264", audio="copy"),
+            cleanup=False,
+            stop_on_error=False,
+            chunk_seconds="auto",
+        )
+        results = run_all(
+            [self.a], cfg, options, Logger(quiet=True), dry_run=True
+        )
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].output)
+        self.assertFalse(work.exists())
 
     def test_run_rejects_file_output_for_multiple_inputs(self):
         cfg = load_config(None, overrides={

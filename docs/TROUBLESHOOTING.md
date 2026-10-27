@@ -1,4 +1,4 @@
-# Troubleshooting — V1 core
+# Troubleshooting — V1 and V2
 
 ## `ffmpeg` or `ffprobe` not found
 
@@ -157,6 +157,13 @@ Set `upscayl_bin` and `models_dir` in `config.txt`, or pass
 `--upscayl-bin`/`--models-dir`. Models need matching `.param` and `.bin` files.
 `doctor` lists the discovered paths.
 
+## `Upscayl model directory must be named 'models'`
+
+Upscayl inspects the folder name. Put custom models in a folder called
+`models`, for example `D:\AI\UpscaylModels\models`, and point `models_dir` at
+that folder. Renaming the parent folder does not help; the folder containing
+the `.param`/`.bin` pairs must be `models`.
+
 ## Upscayl runs out of memory
 
 `upscale` retries once with half the tile and batch size. If it still fails,
@@ -167,13 +174,6 @@ should use 128.
 ## Chunk concatenation fails
 
 Chunked run uses MPEG-TS segments for H.264/HEVC and MOV for ProRes, then concat
-copy. If your build rejects the concat, try `--preset mkv-hevc`; if it still
-fails, run without chunking (`--chunk-seconds 0`) and report the exact error.
-
-## `--chunk-seconds auto` does not chunk
-
-This build uses the non-chunked path for `auto`. Pass an explicit value:
-
-```bash
-upscayl-video run "movie.mkv" --chunk-seconds 60
-```
+copy. MKV presets fall back to a Matroska concat when the MPEG-TS path is
+rejected. If it still fails, run without chunking (`--chunk-seconds 0`) and
+report the exact error.

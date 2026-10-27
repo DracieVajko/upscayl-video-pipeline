@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented here.
 
+## [Unreleased]
+
+### Added
+
+- `run --chunk-seconds auto` selects 60-second chunks when the sample-based
+  disk estimate exceeds `max_work_gb` or would leave less than `min_free_gb`.
+- `assemble` finishes a chunked job from its stored segments, concatenates
+  them, and muxes the source audio/subtitles.
+- `upscale` and `assemble` accept a work directory and process every job; the
+  menu lists jobs and offers one or all.
+- Menu: model picker for standard and custom models, HDR tonemap prompt, and a
+  note that upscale writes frames only.
+- `--keep-chunks` for `run` and `assemble`.
+- `--max-work-gb` and `--min-free-gb` global overrides.
+- `cleanup=1` in `config.txt` is honoured by `run`.
+- `output_dir` in `config.txt` and `--output-dir` choose where finished videos
+  are published.
+- `--cleanup` moves the final video to `output_dir` and removes the whole
+  `work/<job>` folder, so `work/` is empty after a successful run.
+- Upscayl runs projected over one hour ask for confirmation; `--yes` skips it.
+- MKV presets fall back to a Matroska concat when MPEG-TS concat is rejected.
+- Chunk lengths below 10 seconds are clamped to 10 with a warning.
+- `doctor` and `upscale` reject a model directory not named `models` with a
+  clear hint.
+
+### Fixed
+
+- `run --dry-run` no longer creates a job folder or frames.
+- `--quality` together with `--crf` is rejected with exit 4 instead of silently
+  preferring one.
+
+### Changed
+
+- README and docs present V1 (repository root) and V2 (`v2/`) as separate
+  choices; deleting `v2/` leaves a working V1.
+
+### Validated
+
+- 184 V1 tests, 71 PowerShell tests, 72 bash unit tests, and 85 bash tests
+  with `RUN_V2_INTEGRATION=1` pass.
+- Real `4xHFA2k` custom model on 9 frames, 640×480 output.
+- `uhufe`: 16 HLG videos split with `--tonemap --decode auto` into 16 jobs,
+  16,931 frames, 29.43 GB.
+
 ## [0.3.0-v2] — 2026-10-27
 
 ### Added — V1 (Python reference)

@@ -3,9 +3,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from upscayl_video.errors import ValidationError
 from upscayl_video.job import Job
 from upscayl_video.progress import Progress
-from upscayl_video.upscayl import UpscaylPaths, missing_indices, upscale_frames
+from upscayl_video.upscayl import (
+    UpscaylPaths,
+    _confirm_long_upscale,
+    missing_indices,
+    upscale_frames,
+)
 from upscayl_video.util import Logger
 
 
@@ -30,6 +36,16 @@ class TestMissing(unittest.TestCase):
             (out / "frame_00000001.png").write_bytes(b"y")
             (out / "frame_00000002.png").write_bytes(b"")
             self.assertEqual(missing_indices(src, out, 3), [2, 3])
+
+
+class TestEtaConfirmation(unittest.TestCase):
+    def test_assume_yes_does_not_prompt(self):
+        _confirm_long_upscale(Logger(quiet=True), 7200, True)
+
+    @patch("upscayl_video.upscayl.sys.stdin.isatty", return_value=False)
+    def test_non_interactive_requires_yes(self, _isatty):
+        with self.assertRaises(ValidationError):
+            _confirm_long_upscale(Logger(quiet=True), 7200, False)
 
 
 class TestBatch(unittest.TestCase):

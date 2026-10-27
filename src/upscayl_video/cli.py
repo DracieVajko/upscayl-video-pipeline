@@ -1,4 +1,4 @@
-"""Command-line interface for the V1 core pipeline."""
+﻿"""Command-line interface for the V1 core pipeline."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from .util import Logger
 def _global_parent() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--work-dir", default=argparse.SUPPRESS)
+    parent.add_argument("--output-dir", default=argparse.SUPPRESS)
     parent.add_argument("--config", default=argparse.SUPPRESS)
     parent.add_argument("--ffmpeg", default=argparse.SUPPRESS)
     parent.add_argument("--ffprobe", default=argparse.SUPPRESS)
@@ -40,6 +41,8 @@ def _global_parent() -> argparse.ArgumentParser:
     parent.add_argument("--yes", action="store_true", default=argparse.SUPPRESS)
     parent.add_argument("--force", action="store_true", default=argparse.SUPPRESS)
     parent.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
+    parent.add_argument("--max-work-gb", type=int, default=argparse.SUPPRESS)
+    parent.add_argument("--min-free-gb", type=int, default=argparse.SUPPRESS)
     parent.add_argument(
         "--version",
         action="version",
@@ -87,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--all", action="store_true", help="Assemble every job in the work directory")
     assemble.add_argument("--preset", choices=tuple(PRESETS), default=None)
     assemble.add_argument("--encoder", choices=("auto", "nvidia", "amd", "cpu"), default=None)
-    assemble.add_argument("--quality", choices=("fast", "balanced", "quality"), default="balanced")
+    assemble.add_argument("--quality", choices=("fast", "balanced", "quality"), default=None)
     assemble.add_argument("--crf", type=int, default=None)
     assemble.add_argument("--audio", choices=("auto", "copy", "aac", "pcm", "none"), default=None)
     assemble.add_argument("--audio-bitrate", type=int, default=192)
@@ -154,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--retry", type=int, default=1)
     run.add_argument("--preset", choices=tuple(PRESETS), default=None)
     run.add_argument("--encoder", choices=("auto", "nvidia", "amd", "cpu"), default=None)
-    run.add_argument("--quality", choices=("fast", "balanced", "quality"), default="balanced")
+    run.add_argument("--quality", choices=("fast", "balanced", "quality"), default=None)
     run.add_argument("--crf", type=int, default=None)
     run.add_argument("--audio", choices=("auto", "copy", "aac", "pcm", "none"), default=None)
     run.add_argument("--audio-bitrate", type=int, default=192)
@@ -162,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--subs", choices=("auto", "copy", "convert", "none"), default=None)
     run.add_argument("--10bit", dest="ten_bit", action="store_true")
     run.add_argument("--cleanup", action="store_true")
+    run.add_argument("--keep-chunks", action="store_true")
     run.add_argument("--output", default=None)
     run.add_argument("--pick", choices=("error", "newest", "largest"), default="error")
     run.add_argument("--allow-huge", action="store_true")
@@ -218,7 +222,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     overrides: dict[str, str] = {}
-    for key in ("work_dir", "ffmpeg", "ffprobe"):
+    for key in (
+        "work_dir",
+        "output_dir",
+        "ffmpeg",
+        "ffprobe",
+        "max_work_gb",
+        "min_free_gb",
+    ):
         value = getattr(args, key, None)
         if value is not None:
             overrides[key] = str(value)
@@ -283,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 upscaled_dir=Path(args.upscaled_dir) if args.upscaled_dir else None,
                 retry=args.retry,
                 force=bool(getattr(args, "force", False)),
+                assume_yes=bool(getattr(args, "yes", False)),
             )
             result = run_upscale(
                 jobs,
@@ -295,6 +307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "run":
+            if args.quality is not None and args.crf is not None:
+                raise ValidationError("--quality and --crf are mutually exclusive.")
             inputs = resolve_inputs(args.inputs, config, recursive=args.recursive)
             split = SplitOptions(
                 fps=args.fps,
@@ -330,23 +344,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 upscaled_dir=Path(args.upscaled_dir) if args.upscaled_dir else None,
                 retry=args.retry,
                 force=bool(getattr(args, "force", False)),
+                assume_yes=bool(getattr(args, "yes", False)),
             )
+            cleanup = bool(args.cleanup or config.cleanup)
             encode = EncodeOptions(
                 preset=args.preset or config.default_preset,
                 encoder=args.encoder or config.default_encoder,
-                quality=args.quality,
+                quality=args.quality or "balanced",
                 crf=args.crf,
                 audio=args.audio,
                 audio_bitrate=args.audio_bitrate,
                 all_audio=args.all_audio,
                 subs=args.subs,
                 ten_bit=args.ten_bit,
-                cleanup=args.cleanup,
+                cleanup=cleanup,
                 output=Path(args.output) if args.output else None,
                 pick=args.pick,
                 verify_frames=args.verify_frames,
                 allow_huge=args.allow_huge,
                 force=bool(getattr(args, "force", False)),
+                keep_chunks=args.keep_chunks,
             )
             results = run_all(
                 inputs,
@@ -355,16 +372,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     split=split,
                     upscale=upscale,
                     encode=encode,
-                    cleanup=args.cleanup,
+                    cleanup=cleanup,
                     stop_on_error=args.stop_on_error,
                     chunk_seconds=args.chunk_seconds,
                 ),
                 logger,
+                dry_run=bool(getattr(args, "dry_run", False)),
             )
             failed = [result for result in results if result.error]
             return 1 if failed else 0
 
         if args.command == "assemble":
+            if args.quality is not None and args.crf is not None:
+                raise ValidationError("--quality and --crf are mutually exclusive.")
             if args.tonemap:
                 raise ValidationError(
                     "--tonemap is a split-stage option; re-split with --tonemap instead."
@@ -373,7 +393,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             options = EncodeOptions(
                 preset=args.preset or config.default_preset,
                 encoder=args.encoder or config.default_encoder,
-                quality=args.quality,
+                quality=args.quality or "balanced",
                 crf=args.crf,
                 audio=args.audio,
                 audio_bitrate=args.audio_bitrate,

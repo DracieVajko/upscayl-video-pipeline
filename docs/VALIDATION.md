@@ -1,14 +1,15 @@
 # Validation record — V1 and V2
 
-Evidence from local runs on 2026-10-26/27, using the three files in
-`TEST_EXAMPLE_VIDEOS/` (not committed) where noted, plus generated fixtures.
+Evidence from local runs on 2026-10-26/27, using the test clips present at the
+time (later replaced by `Test1_Car_TrailCamera`, `Test2_Car_Drift`, and
+`Test3_SecurityCamera_Dog`) plus generated fixtures.
 Upscayl 2.15.0 with `upscayl-lite-4x` unless stated otherwise.
 
 ## Automated tests
 
 ```
 python -m unittest discover -s tests -q
-Ran 176 tests
+Ran 184 tests
 OK
 ```
 
@@ -19,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File v2/tests/Test-V2.ps1
 
 ```
 bash v2/tests/Test-V2.sh
-82 passed, 0 failed   (with RUN_V2_INTEGRATION=1)
+85 passed, 0 failed   (with RUN_V2_INTEGRATION=1)
 ```
 
 ```
@@ -35,6 +36,45 @@ bash v2/tests/Run-Parity.sh
 `doctor` exits `0` in V1, V2 PowerShell, and V2 bash (Git Bash); FFmpeg/ffprobe,
 NVENC/AMF/CPU encoders, Upscayl models, Upscayl smoke test, and work-dir free
 space pass.
+
+## P0/P1 hardening (2026-10-27)
+
+Targeted checks added after the first release:
+
+- `run --dry-run` leaves the work directory unchanged in V1, PowerShell, and
+  bash; no job folder or frame is created.
+- `run --chunk-seconds auto` selected 60-second chunks from the disk estimate in
+  V1, PowerShell, and bash, verified with real 15-frame runs.
+- `cleanup=1` in `config.txt` removed intermediates after a successful `run` in
+  V1 and bash.
+- `assemble` finished a chunked job from its stored segments: V1 unit test,
+  PowerShell real 12-second run, bash integration test.
+- `--quality` together with `--crf` exits `4` in V1, PowerShell, and bash.
+- `--max-work-gb` and `--min-free-gb` override the disk guard.
+- The menu model picker listed four custom models next to the seven standard
+  ones; `4xHFA2k` upscaled 9 frames to 640×480 with V1.
+- `uhufe`: 16 HLG videos split with `--tonemap --decode auto` into 16 jobs
+  (16,931 frames, 29.43 GB). HLG sources are tonemapped to BT.709, TV range.
+
+## Cleanup and output publishing (2026-10-27)
+
+`--cleanup` now moves the final video to `output_dir` (default `output`) and
+deletes the whole `work/<job>` folder, so `work/` is empty after a successful
+run. Collisions get `_1`, `_2`, ... instead of overwriting.
+
+Verified with a 9-frame clip in V1, V2 PowerShell, and V2 bash:
+
+- exit `0` in all three;
+- the video is in `output/clip_upscaled.mp4`;
+- `work/` contains no files or folders.
+
+Full-length V1 runs assembled both example clips (`Test2_Car_Drift` 170 frames,
+2160×3840, 5.717 s; `Test3_SecurityCamera_Dog` 303 frames, 1920×1440, 5.023 s),
+with AAC audio and BT.709 tags. The full-length V2 runs were not completed
+because the GPU was shared with other applications; the V2 9-frame run passed
+on the same code path. The bash real-Upscayl run needed an explicit `--icd`
+because the AMD Vulkan driver breaks device enumeration, as documented in
+`TROUBLESHOOTING.md`.
 
 ## V1: full split and full assemble (no upscale)
 
@@ -158,7 +198,7 @@ The whole-branch review (after the first green matrix) found and we fixed:
 
 Validated on Git Bash for Windows (POSIX paths, native Windows FFmpeg/Upscayl):
 
-- 82 tests pass (including a 25 fps integration, a failing-assemble last_error check, and a chunked fake-upscaler run with 321×241 frames, audio, and chapters).
+- 85 tests pass (including a 25 fps integration, a failing-assemble last_error check, and a chunked fake-upscaler run with 321×241 frames, audio, and chapters).
 - `doctor` green, including the Upscayl smoke test.
 - Real Upscayl on a 0.5 s clip: 15 frames, 640×480.
 - Real `run` on a 5 s clip with audio and `mov_text` subtitles: 150 frames,
@@ -181,8 +221,6 @@ Validated on Git Bash for Windows (POSIX paths, native Windows FFmpeg/Upscayl):
 
 ## Not yet validated
 
-- `run --chunk-seconds auto`; both versions use the non-chunked path for
-  `auto`. Use an explicit value such as `60`.
 - A full real-Upscayl run of the 7.5 s V1 clip (it was validated as a 1 s window
   plus a full split/assemble; the 18.5 s and 83 s clips were validated
   end-to-end).

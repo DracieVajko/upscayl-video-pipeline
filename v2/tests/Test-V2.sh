@@ -51,7 +51,7 @@ assert_eq "a b" "$(trim "  a b  ")" "trim"
 assert_eq "video" "$(sanitize_job_id "   ")" "sanitize empty"
 assert_eq "a_b" "$(sanitize_job_id "a__b")" "sanitize repeated underscore"
 assert_eq "CON_" "$(sanitize_job_id "CON")" "sanitize reserved"
-assert_eq "žluťoučký" "$(sanitize_job_id "žluťoučký")" "sanitize unicode"
+assert_eq "Å¾luÅ¥ouÄkÃ½" "$(sanitize_job_id "Å¾luÅ¥ouÄkÃ½")" "sanitize unicode"
 assert_eq "00:00:07.532" "$(format_duration 7.532)" "format duration"
 assert_eq "1.0 KiB" "$(format_bytes 1024)" "format bytes KiB"
 assert_eq "1.5 MiB" "$(format_bytes 1572864)" "format bytes MiB"
@@ -261,7 +261,7 @@ if [ "${RUN_V2_INTEGRATION:-0}" = "1" ]; then
         assert_eq "25/1" "$OUT_FPS" "integration output fps"
 
         # Chunked run with a fake upscaler, odd dimensions, audio, and chapters.
-        MODEL_DIR="$TEMP_ROOT/fake-models"
+        MODEL_DIR="$TEMP_ROOT/models"
         mkdir -p "$MODEL_DIR"
         : > "$MODEL_DIR/fake-model.param"
         : > "$MODEL_DIR/fake-model.bin"
@@ -300,7 +300,7 @@ FAKE_EOF
         US_THREADS="1:2:2"; US_ICD=""; US_BIN=""; US_MODELS=""; US_RETRY=0
         SP_FORMAT=png; SP_DENOISE=none; SP_TONEMAP=0; SP_DECODE=cpu
         SP_SCALE=2; SP_TARGET=""; SP_MODEL=fake-model; SP_FPS=""; SP_START=""; SP_END=""
-        EN_TARGET=""; EN_OUTPUT="$TEMP_ROOT/chunk-out.mp4"; EN_KEEP_CHUNKS=0
+        EN_TARGET=""; EN_OUTPUT="$TEMP_ROOT/chunk-out.mp4"; EN_KEEP_CHUNKS=1
         EN_CLEANUP=0; EN_ALLOW_HUGE=0; EN_FORCE=1
         RUN_CLEANUP=0
         run_chunked "$CHUNK_CLIP" 10
@@ -311,6 +311,17 @@ FAKE_EOF
         assert_eq "300" "$(printf '%s\n' "$CHUNK_INFO" | sed -n 's/^nb_read_frames=//p')" "chunked output frames"
         CHAPTERS=$("$CFG_FFPROBE" -v error -show_chapters -of csv=p=0 "$CHUNK_OUTPUT" | grep -c . || true)
         assert_eq "2" "$CHAPTERS" "chunked output chapters"
+
+        # Finish an existing chunked job with assemble instead of run.
+        rm -f "$CHUNK_OUTPUT" "$JOB_DIR/.done_assemble"
+        EN_OUTPUT="$TEMP_ROOT/chunk-assembled.mp4"
+        EN_UPSCALED_DIR=""
+        EN_FORCE=1
+        run_assemble 0 "$JOB_DIR"
+        assert_eq "1" "${#OUTPUTS[@]}" "chunked assemble output count"
+        assert_true "$( [ -f "${OUTPUTS[0]}" ]; echo $? )" "chunked assemble output exists"
+        CHUNK_FRAMES=$("$CFG_FFPROBE" -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "${OUTPUTS[0]}")
+        assert_eq "300" "$CHUNK_FRAMES" "chunked assemble frames"
     fi
 fi
 
@@ -320,6 +331,3 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 exit 0
-
-
-

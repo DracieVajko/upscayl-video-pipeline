@@ -51,7 +51,7 @@ def concat_list(segments: Sequence[Path], path: Path) -> Path:
     return path
 
 
-def concat_segments(
+def _concat_into(
     ffmpeg: Path,
     segments: Sequence[Path],
     output: Path,
@@ -64,10 +64,31 @@ def concat_segments(
         "-f", "concat", "-safe", "0", "-i", str(list_path),
         "-c", "copy", "-fflags", "+genpts", str(output),
     ]
+    run_command(command, logger=logger)
+
+
+def concat_segments(
+    ffmpeg: Path,
+    segments: Sequence[Path],
+    output: Path,
+    logger: Logger,
+) -> Path:
+    """Concatenate segments; fall back to Matroska if the first container fails."""
+
     try:
-        run_command(command, logger=logger)
-    except Exception as exc:
-        raise EncodeError(
-            "Could not concatenate chunk segments.",
-            hint=str(exc),
-        ) from exc
+        _concat_into(ffmpeg, segments, Path(output), logger)
+        return Path(output)
+    except Exception as first:
+        fallback = Path(output).with_suffix(".mkv")
+        try:
+            _concat_into(ffmpeg, segments, fallback, logger)
+            logger.warn(
+                f"Chunk concatenation failed in {Path(output).suffix}; "
+                f"used Matroska fallback: {fallback}"
+            )
+            return fallback
+        except Exception as second:
+            raise EncodeError(
+                "Could not concatenate chunk segments.",
+                hint=f"{first}\nMatroska fallback: {second}",
+            ) from second
