@@ -85,8 +85,8 @@ repository layout, not a copied `v2/` folder.
 
 ## Known differences
 
-- `split-all`, `finish`, and `model-test` are V1-only for now; the V2 ports are
-  a follow-up.
+- `split-all` and `finish` are implemented in PowerShell; the bash ports are a
+  follow-up. `model-test` is V1-only for now.
 - Console progress is simpler in V2 (batch counts) and debug commands go to
   stderr.
 - On Unix, `--icd auto` does not auto-select an NVIDIA ICD, matching V1; use

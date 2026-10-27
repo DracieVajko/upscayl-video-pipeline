@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented here.
 
+## [Unreleased]
+
+### Added
+
+- PowerShell `split-all` and `finish` (workspace flow): `input_dir`,
+  `batch00001/in|out`, audio extraction, manifest, and output publishing.
+
+### Not yet
+
+- Bash ports of `split-all` and `finish`.
+- V2 PowerShell/bash `model-test`.
+
 ## [0.3.1] — 2026-10-27
 
 ### Added

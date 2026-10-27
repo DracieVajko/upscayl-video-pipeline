@@ -476,6 +476,7 @@ function Get-DefaultConfigValues {
         models_dir      = 'auto'
         work_dir        = 'work'
         output_dir      = 'output'
+        input_dir       = 'input'
         default_model   = 'upscayl-standard-4x'
         default_scale   = '2'
         default_preset  = 'mp4-h264'
@@ -634,6 +635,11 @@ function Get-Config {
     if (-not [IO.Path]::IsPathRooted($outputDir)) { $outputDir = Join-Path $outputOrigin $outputDir }
     $outputDir = [IO.Path]::GetFullPath($outputDir)
 
+    $inputOrigin = if ($overrideKeys.ContainsKey('input_dir')) { (Get-Location).Path } else { $configDir }
+    $inputDir = Expand-HomePath $merged['input_dir']
+    if (-not [IO.Path]::IsPathRooted($inputDir)) { $inputDir = Join-Path $inputOrigin $inputDir }
+    $inputDir = [IO.Path]::GetFullPath($inputDir)
+
     $defaultScale = ConvertTo-IntValue $merged['default_scale'] 'default_scale'
     if (@(2, 3, 4) -notcontains $defaultScale) {
         throw [PipelineException]::new('default_scale must be 2, 3, or 4', $null, 4)
@@ -676,6 +682,7 @@ function Get-Config {
         models_dir      = (Get-OptionalPath 'models_dir')
         work_dir        = $workDir
         output_dir      = $outputDir
+        input_dir       = $inputDir
         default_model   = $merged['default_model'].Trim()
         default_scale   = $defaultScale
         default_preset  = $defaultPreset
@@ -1048,6 +1055,26 @@ function Get-JobValue {
         return $value
     }
     return $Default
+}
+
+function Get-JobFramesDir {
+    param($Job)
+    $value = [string](Get-JobValue $Job 'frames_dir' '')
+    if ($value) {
+        if ([IO.Path]::IsPathRooted($value)) { return [IO.Path]::GetFullPath($value) }
+        return [IO.Path]::GetFullPath((Join-Path $Job.path $value))
+    }
+    return (Join-Path $Job.path 'frames')
+}
+
+function Get-JobUpscaledDir {
+    param($Job)
+    $value = [string](Get-JobValue $Job 'upscaled_dir' '')
+    if ($value) {
+        if ([IO.Path]::IsPathRooted($value)) { return [IO.Path]::GetFullPath($value) }
+        return [IO.Path]::GetFullPath((Join-Path $Job.path $value))
+    }
+    return (Join-Path $Job.path 'upscaled')
 }
 
 function Set-JobValue {
@@ -1561,7 +1588,7 @@ function Invoke-FrameExtraction {
         Set-JobValue $Job 'decode' 'cpu'
     }
 
-    $framesDir = Join-Path $Job.path 'frames'
+    $framesDir = Get-JobFramesDir $Job
     $groups = Get-FrameGroups $framesDir
     $totalFiles = 0
     foreach ($index in $groups.Keys) {
@@ -2660,7 +2687,7 @@ function Invoke-UpscaleFrames {
         [bool]$AssumeYes = $true
     )
     if (-not (Test-Path -LiteralPath $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
-    if (-not $SourceDir) { $SourceDir = Join-Path $Job.path 'frames' }
+    if (-not $SourceDir) { $SourceDir = Get-JobFramesDir $Job }
     $total = if ($null -ne $TotalFrames) { [int]$TotalFrames } else { Get-JobInt $Job 'frame_count' 0 }
     if ($total -le 0) {
         throw [PipelineException]::new("Job has no frame_count: $($Job.path)", $null, 4)
@@ -2956,7 +2983,7 @@ function Get-FpsOverride {
 
 function Test-JobHasFrames {
     param($Job)
-    $groups = Get-FrameGroups (Join-Path $Job.path 'frames')
+    $groups = Get-FrameGroups (Get-JobFramesDir $Job)
     foreach ($index in $groups.Keys) {
         foreach ($file in $groups[$index]) {
             if ($file.PSIsContainer -eq $false -and $file.Length -gt 0) { return $true }
@@ -3196,7 +3223,7 @@ function Invoke-Upscale {
         if ($chunkMarkers.Count -gt 0) {
             throw [PipelineException]::new("Job is chunked: $([IO.Path]::GetFileName($job.path))", 'Resume it with the run command.', 4)
         }
-        $framesDir = Join-Path $job.path 'frames'
+        $framesDir = Get-JobFramesDir $job
         if (-not (Test-Path -LiteralPath $framesDir -PathType Container)) {
             throw [PipelineException]::new("No frames found for job: $([IO.Path]::GetFileName($job.path))", 'Run split first.', 4)
         }
@@ -3208,7 +3235,7 @@ function Invoke-Upscale {
         if ($frameCount -le 0) {
             throw [PipelineException]::new("Job has no frames: $([IO.Path]::GetFileName($job.path))", $null, 4)
         }
-        $outputDir = if ($Options.upscaled_dir) { Resolve-AbsolutePath (Expand-HomePath $Options.upscaled_dir) } else { Join-Path $job.path 'upscaled' }
+        $outputDir = if ($Options.upscaled_dir) { Resolve-AbsolutePath (Expand-HomePath $Options.upscaled_dir) } else { Get-JobUpscaledDir $job }
         $existing = $false
         if (Test-Path -LiteralPath $outputDir -PathType Container) {
             $existing = @(Get-ChildItem -LiteralPath $outputDir -File -ErrorAction SilentlyContinue).Count -gt 0
@@ -3893,8 +3920,7 @@ function Invoke-Assemble {
             $upscaledDir = if ($Options.upscaled_dir) {
                 Resolve-AbsolutePath (Expand-HomePath $Options.upscaled_dir)
             } else {
-                $stored = Get-JobValue $job 'upscaled_dir' ''
-                if ($stored) { Resolve-AbsolutePath (Expand-HomePath $stored) } else { Join-Path $job.path 'upscaled' }
+                Get-JobUpscaledDir $job
             }
             if (-not (Test-Path -LiteralPath $upscaledDir -PathType Container)) {
                 throw [PipelineException]::new("No upscaled frames found: $upscaledDir", 'Run Upscayl on the frames folder first, or pass --upscaled-dir.', 4)
@@ -4017,6 +4043,154 @@ function Invoke-Assemble {
     return $outputs
 }
 
+function Invoke-SplitAll {
+    param($Config, $Options, $Logger, [bool]$DryRun = $false)
+    $inputDir = $Config.input_dir
+    if (-not (Test-Path -LiteralPath $inputDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $inputDir -Force | Out-Null
+    }
+    $extensions = @('.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v', '.mts', '.m2ts')
+    $videos = @(Get-ChildItem -LiteralPath $inputDir -Recurse -File |
+        Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
+        Sort-Object FullName)
+    if ($videos.Count -eq 0) {
+        throw [PipelineException]::new("No videos found in: $inputDir", 'Put the original videos in the input folder and run again.', 2)
+    }
+    Write-Info ('Inputs: ' + $videos.Count + ' - work: ' + $Config.work_dir)
+    if ($DryRun) { Write-Info 'Dry run: nothing written.'; return }
+
+    $created = @()
+    foreach ($video in $videos) {
+        Write-Info ('Splitting: ' + $video.Name)
+        $media = Get-MediaInfo -Ffprobe $Config.ffprobe -Source $video.FullName -Logger $Logger
+        $tonemap = if ($null -ne $Options.tonemap) { [bool]$Options.tonemap } else { [bool]$media.hdr }
+        if ($media.hdr -and -not $tonemap) {
+            throw [PipelineException]::new('HDR source detected. Upscayl models are 8-bit SDR.', 'Re-run with --tonemap.', 4)
+        }
+        $split = @{
+            fps = $null; start = $null; end = $null; format = $Options.format;
+            jpeg_quality = $Options.jpeg_quality; png_compression = $Options.png_compression;
+            denoise = $Options.denoise; tonemap = $tonemap; decode = $Options.decode;
+            scale = $Options.scale; target_height = $null; model = $Options.model;
+            verify_frames = $false; recursive = $false; force = $false
+        }
+        $job = @(Invoke-Split -Inputs @($video.FullName) -Config $Config -Options $split -Logger $Logger)[0]
+        $frames = Get-JobFramesDir $job
+        if (-not (Get-JobValue $job 'frames_dir' '')) {
+            $batch = Join-Path $job.path 'batch00001'
+            $incoming = Join-Path $batch 'in'
+            if (Test-Path -LiteralPath $incoming) { Remove-Item -LiteralPath $incoming -Recurse -Force }
+            New-Item -ItemType Directory -Path $batch -Force | Out-Null
+            Move-Item -LiteralPath $frames -Destination $incoming
+            Set-JobValue $job 'frames_dir' 'batch00001/in'
+            Set-JobValue $job 'upscaled_dir' 'batch00001/out'
+            Set-JobValue $job 'layout' 'batches'
+            Save-Job $job
+        }
+        New-Item -ItemType Directory -Path (Join-Path $job.path 'batch00001\out') -Force | Out-Null
+
+        $audioDir = Join-Path $job.path 'audio'
+        New-Item -ItemType Directory -Path $audioDir -Force | Out-Null
+        $info = @()
+        if ($media.audio.Count -eq 0) {
+            $info += 'tracks=0'
+            Set-JobValue $job 'audio_tracks' 0
+        } else {
+            $info += ('tracks=' + $media.audio.Count)
+            $number = 1
+            foreach ($stream in $media.audio) {
+                $target = Join-Path $audioDir ('track{0:D2}.mka' -f $number)
+                $arguments = @($Config.ffmpeg, '-hide_banner', '-nostdin', '-y', '-i', (Get-JobSourcePath $job),
+                    '-map', ('0:' + $stream.index), '-vn', '-sn', '-dn', '-c', 'copy', $target)
+                try { Invoke-Child -Arguments $arguments | Out-Null }
+                catch {
+                    $arguments = @($Config.ffmpeg, '-hide_banner', '-nostdin', '-y', '-i', (Get-JobSourcePath $job),
+                        '-map', ('0:' + $stream.index), '-vn', '-sn', '-dn', '-c:a', 'flac', $target)
+                    Invoke-Child -Arguments $arguments | Out-Null
+                }
+                $info += @('', ('track={0:D2}' -f $number), ('index=' + $stream.index),
+                    ('codec=' + $stream.codec_name), ('channels=' + $stream.channels),
+                    ('language=' + $stream.language), ('title=' + $stream.title),
+                    ('file=track{0:D2}.mka' -f $number))
+                $number++
+            }
+            Set-JobValue $job 'audio_tracks' $media.audio.Count
+        }
+        Save-Job $job
+        Set-Content -LiteralPath (Join-Path $audioDir 'info.txt') -Value ($info -join "`n") -Encoding UTF8
+        $created += $job
+    }
+
+    $rows = @()
+    foreach ($job in @(Find-Jobs $Config.work_dir)) {
+        $rows += [pscustomobject]@{
+            job = [IO.Path]::GetFileName($job.path)
+            source = Get-JobSourcePath $job
+            frames = Get-JobValue $job 'frame_count' ''
+            in = Get-JobFramesDir $job
+            out = Get-JobUpscaledDir $job
+            audio_tracks = Get-JobValue $job 'audio_tracks' 0
+        }
+    }
+    if ($rows.Count -gt 0) {
+        $rows | Export-Csv -Path (Join-Path $Config.work_dir 'manifest.csv') -NoTypeInformation -Encoding UTF8
+        $lines = @('Upscayl Video Pipeline - workspace', '',
+            'Point the Upscayl GUI at:', '  Input:  <job>\batch00001\in',
+            '  Output: <job>\batch00001\out', '', 'Then run: UpscaylVideo.bat finish --all', '', 'Jobs:')
+        foreach ($job in $created) {
+            $lines += ('  ' + [IO.Path]::GetFileName($job.path) + ': ' + $job.path)
+        }
+        Set-Content -LiteralPath (Join-Path $Config.work_dir 'README-UPScayl.txt') -Value ($lines -join "`n") -Encoding UTF8
+    }
+    Write-Info ('Split complete: ' + $created.Count + ' job(s)')
+}
+
+function Invoke-Finish {
+    param([object[]]$Jobs, $Config, $Options, $Logger, [bool]$DryRun = $false)
+    $done = 0; $skipped = 0; $failed = 0
+    foreach ($job in $Jobs) {
+        $upscaledDir = Get-JobUpscaledDir $job
+        $count = @(Get-ChildItem -LiteralPath $upscaledDir -Recurse -File -Filter 'frame_*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 0 }).Count
+        if ($count -eq 0) {
+            Write-Info ('Skipping ' + [IO.Path]::GetFileName($job.path) + ': no upscaled frames')
+            $skipped++
+            continue
+        }
+        $profile = $Options.profile
+        $preset = if ($Options.preset) { $Options.preset } elseif ($profile -eq 'quality') { 'mp4-hevc' } elseif ($profile -eq 'fast') { 'mp4-h264' } else { $Config.default_preset }
+        $quality = if ($Options.quality) { $Options.quality } elseif ($profile -eq 'quality') { 'quality' } elseif ($profile -eq 'fast') { 'fast' } else { 'balanced' }
+        $encoder = if ($Options.encoder) { $Options.encoder } elseif ($profile -eq 'fast') { 'auto' } else { $Config.default_encoder }
+        $encode = @{
+            preset = $preset; encoder = $encoder; quality = $quality; crf = $Options.crf;
+            audio = $Options.audio; audio_bitrate = $Options.audio_bitrate; all_audio = $Options.all_audio;
+            subs = $Options.subs; ten_bit = $Options.ten_bit; target_height = $null;
+            cleanup = (-not $Options.keep); output = $null; upscaled_dir = $null; pick = 'error';
+            verify_frames = $false; allow_huge = $false; force = $false; keep_chunks = $false
+        }
+        try {
+            Write-Info ('Assembling ' + [IO.Path]::GetFileName($job.path) + ' (' + $count + ' frames)')
+            $outputs = @(Invoke-Assemble -Jobs @($job) -Config $Config -Options $encode -Logger $Logger -DryRun $DryRun)
+            if ($outputs.Count -gt 0) { Write-Info ('Output: ' + $outputs[0]) }
+            $done++
+        } catch {
+            $ex = Get-PipelineException $_
+            Write-Err ([IO.Path]::GetFileName($job.path) + ': ' + $ex.Message)
+            $failed++
+        }
+    }
+    $remaining = @(Find-Jobs $Config.work_dir)
+    if ($remaining.Count -eq 0) {
+        foreach ($name in @('manifest.csv', 'README-UPScayl.txt')) {
+            $path = Join-Path $Config.work_dir $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+    }
+    Write-Info ('Finished: ' + $done + ' - skipped: ' + $skipped + ' - failed: ' + $failed)
+    if ($failed -gt 0) { return 1 }
+    return 0
+}
+
 function Invoke-Status {
     param($Config, $Logger, [bool]$VerboseOutput = $false)
     $jobs = @(Find-Jobs $Config.work_dir)
@@ -4027,9 +4201,9 @@ function Invoke-Status {
     Write-Info (('{0,-24} {1,-10} {2,7} {3,9}  {4}' -f 'JOB', 'STAGE', 'FRAMES', 'UPSCALED', 'OUTPUT'))
     foreach ($job in $jobs) {
         $frameFormat = Get-JobValue $job 'frame_format' 'png'
-        $frames = Count-ContiguousFrames (Join-Path $job.path 'frames') $frameFormat
+        $frames = Count-ContiguousFrames (Get-JobFramesDir $job) $frameFormat
         $upscaled = 0
-        $groups = Get-FrameGroups (Join-Path $job.path 'upscaled') -Recursive
+        $groups = Get-FrameGroups (Get-JobUpscaledDir $job) -Recursive
         foreach ($index in $groups.Keys) {
             foreach ($file in $groups[$index]) {
                 if ($file.PSIsContainer -eq $false -and $file.Length -gt 0) { $upscaled++ }
@@ -4098,8 +4272,8 @@ function Invoke-Clean {
         if ($AllIntermediates) {
             $Frames = $true; $Upscaled = $true; $Chunks = $true; $Sequence = $true; $Batch = $true
         }
-        if ($Frames) { $targets[(Join-Path $job.path 'frames')] = $true }
-        if ($Upscaled) { $targets[(Join-Path $job.path 'upscaled')] = $true }
+        if ($Frames) { $targets[(Get-JobFramesDir $job)] = $true }
+        if ($Upscaled) { $targets[(Get-JobUpscaledDir $job)] = $true }
         if ($Chunks) { $targets[(Join-Path $job.path 'chunks')] = $true }
         if ($Sequence) { $targets[(Join-Path $job.path 'sequence')] = $true }
         if ($Batch) {
@@ -4647,6 +4821,7 @@ function Get-CommandOptionsSpec {
     $spec = @{
         'work-dir' = @{ kind = 'value' }
         'output-dir' = @{ kind = 'value' }
+        'input-dir' = @{ kind = 'value' }
         'config'   = @{ kind = 'value' }
         'ffmpeg'   = @{ kind = 'value' }
         'ffprobe'  = @{ kind = 'value' }
@@ -4694,6 +4869,32 @@ function Get-CommandOptionsSpec {
             & $add 'models-dir' 'value'
             & $add 'upscaled-dir' 'value'
             & $add 'retry' 'value' $null $null $true
+        }
+        'split-all' {
+            & $add 'format' 'value' $null @('png', 'jpg')
+            & $add 'png-compression' 'value' $null $null $true
+            & $add 'jpeg-quality' 'value' $null $null $true
+            & $add 'denoise' 'value' $null @('none', 'light', 'medium', 'strong')
+            & $add 'decode' 'value' $null @('cpu', 'gpu', 'auto')
+            & $add 'tonemap' 'flag'
+            & $add 'no-tonemap' 'flag'
+            & $add 'scale' 'value' $null @(2, 3, 4) $true
+            & $add 'model' 'value'
+        }
+        'finish' {
+            & $add 'all' 'flag'
+            & $add 'job' 'value'
+            & $add 'profile' 'value' $null @('default', 'fast', 'quality')
+            & $add 'preset' 'value' $null @('mp4-h264', 'mp4-hevc', 'mkv-hevc', 'mov-prores')
+            & $add 'encoder' 'value' $null @('auto', 'nvidia', 'amd', 'cpu')
+            & $add 'quality' 'value' $null @('fast', 'balanced', 'quality')
+            & $add 'crf' 'value' $null $null $true
+            & $add 'audio' 'value' $null @('auto', 'copy', 'aac', 'pcm', 'none')
+            & $add 'audio-bitrate' 'value' $null $null $true
+            & $add 'all-audio' 'flag'
+            & $add 'subs' 'value' $null @('auto', 'copy', 'convert', 'none')
+            & $add '10bit' 'flag' 'ten_bit'
+            & $add 'keep' 'flag'
         }
         'assemble' {
             & $add 'all' 'flag'
@@ -4857,7 +5058,7 @@ function Get-OptionValue {
 function Invoke-Main {
     param([string[]]$Argv)
 
-    $globalValueOptions = @('work-dir', 'output-dir', 'config', 'ffmpeg', 'ffprobe')
+    $globalValueOptions = @('work-dir', 'output-dir', 'input-dir', 'config', 'ffmpeg', 'ffprobe')
     $globalFlagOptions = @('verbose', 'quiet', 'yes', 'force', 'dry-run')
     $command = $null
     $commandIndex = -1
@@ -4899,7 +5100,7 @@ function Invoke-Main {
         break
     }
 
-    $validCommands = @('doctor', 'split', 'upscale', 'assemble', 'run', 'status', 'clean')
+    $validCommands = @('doctor', 'split', 'split-all', 'upscale', 'assemble', 'finish', 'run', 'status', 'clean')
     if (-not $command) {
         if ($Argv.Count -eq 0) {
             if ([Console]::IsInputRedirected) {
@@ -4943,7 +5144,7 @@ function Invoke-Main {
 
     $logger = New-Logger -VerboseOutput ([bool]$opts.ContainsKey('verbose')) -Quiet ([bool]$opts.ContainsKey('quiet'))
     $overrides = @{}
-    foreach ($key in @('work_dir', 'output_dir', 'ffmpeg', 'ffprobe', 'max_work_gb', 'min_free_gb')) {
+    foreach ($key in @('work_dir', 'output_dir', 'input_dir', 'ffmpeg', 'ffprobe', 'max_work_gb', 'min_free_gb')) {
         if ($opts.ContainsKey($key)) { $overrides[$key] = [string]$opts[$key] }
     }
     $config = Get-Config -ConfigPath $(if ($opts.ContainsKey('config')) { $opts['config'] } else { $null }) -Overrides $overrides -ToolDir $script:ToolDir
@@ -4995,6 +5196,48 @@ function Invoke-Main {
         $result = @(Invoke-Upscale -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun)
         Write-Info ("Upscaled " + $result.Count + ' job(s)')
         return 0
+    }
+
+    if ($command -eq 'split-all') {
+        $tonemap = if ($opts.ContainsKey('tonemap')) { $true } elseif ($opts.ContainsKey('no_tonemap')) { $false } else { $null }
+        $options = @{
+            format = (Get-OptionValue $opts 'format' 'png')
+            png_compression = (Get-OptionValue $opts 'png_compression' 1)
+            jpeg_quality = (Get-OptionValue $opts 'jpeg_quality' 1)
+            denoise = (Get-OptionValue $opts 'denoise' 'none')
+            decode = (Get-OptionValue $opts 'decode' 'auto')
+            tonemap = $tonemap
+            scale = (Get-OptionValue $opts 'scale' $config.default_scale)
+            model = (Get-OptionValue $opts 'model' $config.default_model)
+        }
+        Invoke-SplitAll -Config $config -Options $options -Logger $logger -DryRun $dryRun
+        return 0
+    }
+
+    if ($command -eq 'finish') {
+        $jobs = @()
+        if ($opts.ContainsKey('job')) {
+            $jobs = @(Resolve-Jobs -Arguments @($opts['job']) -Config $config -AllJobs $false)
+        } elseif ($opts.ContainsKey('all')) {
+            $jobs = @(Resolve-Jobs -Arguments @() -Config $config -AllJobs $true)
+        } else {
+            $jobs = @(Select-Jobs $config $logger)
+        }
+        if ($jobs.Count -eq 0) { return 0 }
+        $options = @{
+            profile = (Get-OptionValue $opts 'profile' 'default')
+            preset = (Get-OptionValue $opts 'preset' $null)
+            encoder = (Get-OptionValue $opts 'encoder' $null)
+            quality = (Get-OptionValue $opts 'quality' $null)
+            crf = (Get-OptionValue $opts 'crf' $null)
+            audio = (Get-OptionValue $opts 'audio' $null)
+            audio_bitrate = (Get-OptionValue $opts 'audio_bitrate' 192)
+            all_audio = $opts.ContainsKey('all_audio')
+            subs = (Get-OptionValue $opts 'subs' $null)
+            ten_bit = $opts.ContainsKey('ten_bit')
+            keep = $opts.ContainsKey('keep')
+        }
+        return (Invoke-Finish -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun)
     }
 
     if ($command -eq 'assemble') {
