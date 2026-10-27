@@ -1,19 +1,31 @@
-# Usage — V1 core
+# Usage
 
-The V1 core covers two workflows:
+The pipeline supports three workflows:
 
 1. **Split only** → upscale manually in the Upscayl GUI → **assemble**.
 2. **Split** and **assemble** with a different external upscaler.
+3. **Automated `run`**: split → `upscayl-bin` → assemble, with resume and
+   chunking.
 
-Automated `upscale`, `run`, chunking, and the full menu are implemented in the
-next plan and are not part of this build.
+V1 (Python) and V2 (PowerShell/bash) use the same commands, flags, and
+`job.txt`/`config.txt` contract. V2 launchers:
+
+```bat
+v2\windows\UpscaylVideo.bat <command> [options]
+```
+
+```bash
+bash v2/unix/upscayl-video.sh <command> [options]
+```
 
 ## Requirements
 
-- Python 3.10 or newer.
+- **V1:** Python 3.10 or newer.
+- **V2 Windows:** PowerShell 5.1+. **V2 Unix:** bash 3.2+.
 - FFmpeg and ffprobe. Either put them in `PATH`, set `ffmpeg=`/`ffprobe=` in
   `config.txt`, or pass `--ffmpeg`/`--ffprobe`.
-- Upscayl is **not required** for the core: it is used manually in its GUI.
+- Upscayl with `upscayl-bin` and models for `upscale`/`run`; split/assemble and
+  the manual GUI workflow do not require the CLI.
 
 ## Quick start
 
@@ -234,8 +246,11 @@ Upscayl may create a model-specific subfolder or append a suffix to filenames;
 the assembler accepts both. If two files map to the same frame index, use
 `--pick newest` or `--pick largest`, or remove the stale copy.
 
-## Not in this build
+## Known limitations
 
-- Native PowerShell/bash V2 implementation (`v2/`).
-- Chunking driven by `auto`; use an explicit `--chunk-seconds N`.
-- Frame interpolation and HDR output.
+- Chunking driven by `auto` uses the non-chunked path; use an explicit
+  `--chunk-seconds N`.
+- V2 bash was validated on Git Bash for Windows; native Linux/macOS execution
+  is not part of the recorded validation yet. macOS bash 3.2 syntax constraints
+  are observed.
+- Frame interpolation and HDR output are not supported.

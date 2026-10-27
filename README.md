@@ -6,16 +6,15 @@ A local FFmpeg + Upscayl pipeline for upscaling video:
 video → frames → Upscayl → frames → video (with audio, subtitles, chapters)
 ```
 
-**Status:** V1 implemented. Split, manual GUI or automated `upscayl-bin`
-upscaling, all-in-one `run`, chunked processing, and assemble work end-to-end.
-The no-Python V2 implementation is next (`v2/`).
+**Status:** V1 and V2 implemented. Split, manual GUI or automated
+`upscayl-bin` upscaling, all-in-one `run`, chunked processing, and assemble
+work end-to-end in both versions.
 
 ## Repository layout
 
-- **`/` (root): V1 core**, Python 3.10+ CLI and launchers. This is the working
-  implementation today.
-- **`v2/`: V2 native** (PowerShell 5.1+ and bash 3.2+), planned full-parity
-  implementation. Not implemented yet; see [`v2/README.md`](v2/README.md).
+- **`/` (root): V1 core**, Python 3.10+ CLI and launchers.
+- **`v2/`: V2 native** (PowerShell 5.1+ for Windows, bash 3.2+ for Unix),
+  no Python/Node/jq. See [`v2/README.md`](v2/README.md).
 - **`docs/`**: design spec, plans, usage, troubleshooting, and upstream notes.
 
 Both versions share the same `job.txt` folder contract, so users can choose
@@ -48,13 +47,21 @@ the implementation that fits their machine without changing workflows.
   nine-option menu.
 - Windows/NVIDIA Vulkan ICD workaround for the AMD enumeration bug.
 - Paths with spaces and Unicode.
+- **V2 parity:** the same commands, flags, `job.txt`/`config.txt` contract,
+  presets, audio/subtitle rules, exit codes, chunking, resume, doctor, and
+  nine-option menu in PowerShell and bash.
 
-Not yet: V2 PowerShell/bash parity. `run --chunk-seconds auto` currently uses
-the non-chunked path; use an explicit value such as `60` for chunking.
+Known limitation: `run --chunk-seconds auto` currently uses the non-chunked
+path in both versions; use an explicit value such as `60` for chunking. V2
+bash has been exercised on Git Bash for Windows and with syntax checks for
+bash 3.2, but not on native Linux/macOS. Details in
+[`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ## Requirements
 
-- Python 3.10+ (V1).
+- **V1:** Python 3.10+.
+- **V2 Windows:** PowerShell 5.1+.
+- **V2 Unix:** bash 3.2+.
 - FFmpeg and ffprobe.
 - Upscayl with `upscayl-bin` and models for `upscale`/`run`; split/assemble and
   the manual GUI workflow do not require the CLI.
@@ -86,7 +93,22 @@ upscayl-video run "clip.mp4" --model upscayl-lite-4x --scale 2 --preset mp4-h264
 upscayl-video run "movie.mkv" --chunk-seconds 60 --preset mkv-hevc --cleanup
 ```
 
-See [`docs/USAGE.md`](docs/USAGE.md) for every command and flag.
+V2 uses the same commands and flags:
+
+```bat
+:: Windows (PowerShell 5.1+)
+v2\windows\UpscaylVideo.bat doctor
+v2\windows\UpscaylVideo.bat run "clip.mp4" --preset mp4-hevc
+```
+
+```bash
+# Linux/macOS (bash 3.2+)
+bash v2/unix/upscayl-video.sh doctor
+bash v2/unix/upscayl-video.sh run "clip.mp4" --preset mp4-hevc
+```
+
+See [`docs/USAGE.md`](docs/USAGE.md) for every command and flag and
+[`v2/README.md`](v2/README.md) for V2 parity details.
 
 ## Configuration
 

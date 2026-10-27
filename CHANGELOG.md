@@ -4,44 +4,55 @@ All notable changes to this project will be documented here.
 
 ## [Unreleased]
 
-### Added
+### Added — V1 (Python reference)
 
-- V1 core pipeline: `doctor`, `split`, `assemble`, `status`, `clean`, and a
-  basic interactive menu.
+- `doctor`, `split`, `assemble`, `upscale`, `run`, `status`, `clean`, and the
+  full nine-option interactive menu.
 - Frame extraction with PNG/JPEG, denoise, HDR tonemapping, CFR conversion,
   resume, and sample-based disk estimation.
 - Manual Upscayl GUI workflow, including suffixed output names and one-level
   output subfolders.
+- Automated `upscayl-bin` upscaling in resumable batches, with model/ICD/tile
+  discovery and VRAM-based batch sizing.
+- All-in-one `run` for one or many videos, with progress/ETA and long-run
+  warnings.
+- Time-based chunking for long videos, per-chunk encode, concat, and audio mux.
 - MP4 H.264, MP4 HEVC, MKV HEVC, and MOV ProRes presets.
 - NVIDIA NVENC, AMD AMF, and CPU encoding with automatic fallback.
 - Audio copy/AAC/PCM/none, multiple audio tracks, subtitles, and chapters.
-- Output validation with ffprobe.
-- Windows `.bat` and Unix `.sh` launchers.
-- Usage and troubleshooting documentation.
+- Output validation with ffprobe and BT.709 color-tag normalization.
+- Windows `.bat` and Unix `.sh` launchers, usage and troubleshooting docs.
 
-### Added
+### Added — V2 (no Python/Node/jq)
 
-- Automated `upscayl-bin` upscaling in resumable batches, with model/ICD/tile
-  discovery and VRAM-based batch sizing.
-- `run` all-in-one command for one or many videos.
-- Time-based chunking for long videos, per-chunk encode, concat, and audio mux.
-- Upscayl smoke test and encoder smoke tests in `doctor`.
-- Full nine-option interactive menu.
-- Progress/ETA for the Upscayl stage and long-run warnings.
+- Windows: `v2/windows/UpscaylVideo.ps1` (PowerShell 5.1+) and
+  `UpscaylVideo.bat`.
+- Unix: `v2/unix/upscayl-video.sh` (bash 3.2+).
+- Same commands, flags, `job.txt`/`config.txt` contract, presets, audio and
+  subtitle rules, exit codes, chunking, resume, doctor, and menu as V1.
+- Plain PowerShell and bash test harnesses with no Pester/bats dependency.
+- Cross-version parity harnesses: `v2/tests/Run-Parity.ps1` and
+  `v2/tests/Run-Parity.sh`.
 
 ### Fixed
 
 - Refuse to write the output over the source video; enforce the preset extension.
 - Encode through a partial file and atomically replace the final output; delete
   partial files on failure and clear stale `.done_assemble` markers.
-- Use video duration (tail packet probe when needed) instead of packet count, so
-  `--fps`, VFR, and Matroska audio-tail sources do not lose frames.
+- Use the video duration (or packet count) instead of a fragile Matroska tail
+  probe, so `--fps`, VFR, and audio-tail sources do not lose frames.
 - Seek the source input with `-ss` for trimmed jobs; re-encode copied audio as
   AAC for a sample-accurate start.
 - Honor a job's stored `--target-height`; round odd target heights up.
 - Write BT.709 SDR color tags after `--tonemap`.
+- Preserve subtitles and attachments during the color-tag remux, and avoid
+  failing on MOV data tracks.
+- Fall back from RGB color matrices (`gbr`) to a valid YUV matrix (BT.709 for
+  HD, BT.601 for SD) instead of passing invalid encoder options.
 - Convert `mov_text` subtitles to `subrip` in MKV instead of failing.
 - Reject partial upscaled frame sets before encoding; never shrink `frame_count`.
+- Re-splitting the same job without `--end` no longer reports a false settings
+  difference.
 - Resolve config-relative paths against the config directory and CLI-relative
   paths against the current directory.
 - Use config `default_audio`/`default_subs`, delete transient `sequence/`, and
@@ -49,24 +60,30 @@ All notable changes to this project will be documented here.
 
 ### Validated
 
-- 170 automated tests pass.
-- All three local example clips fully split and fully assembled: 225, 556,
-  and 2,495 frames; durations 7.53 s, 18.53 s, and 83.15 s; AAC audio; BT.709.
-- Real Upscayl `upscayl-lite-4x` runs on a 1-second window of each clip: 2×
-  output, correct frame counts and audio.
-- Real chunked run on an 18.5 s clip (`--chunk-seconds 10`): 2 chunks, 556
-  frames, 3104×4128, correct audio, chunks cleaned.
-- Full 83.15 s real Upscayl run (`--chunk-seconds 30`): 2,495 frames,
-  2944×3904, 83.116689 s, AAC 83.105 s, BT.709, chunks cleaned.
-- `doctor` green including the Upscayl smoke test and all encoder smoke tests.
-- See `docs/VALIDATION.md` for exact results and the remaining gaps.
+- 174 V1 tests, 68 V2 PowerShell tests, and 63 V2 bash tests pass.
+- V1: all three local example clips fully split and fully assembled (225, 556,
+  2,495 frames; 7.53 s, 18.53 s, 83.15 s), real Upscayl on 1 s windows, a real
+  18.5 s chunked run, and a full 83.15 s chunked run
+  (2,495 frames, 2944×3904, 83.116689 s, AAC 83.105 s, BT.709).
+- V2 PowerShell: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and 12 s
+  chunked jobs; all presets, target height, 10-bit HEVC, odd dimensions, JPEG,
+  trim, resume, and GUI-suffixed names.
+- V2 bash on Git Bash: real Upscayl runs on 0.5 s, 5 s (audio + subtitles), and
+  12 s chunked jobs; split/assemble variants and resume.
+- V1 ↔ V2 PowerShell cross-version matrix passes on MP4, MKV+MP3+SRT+chapters,
+  and odd-dimension FFV1.
+- `doctor` green in V1 and both V2 implementations.
 
 ### Not yet
 
-- Automated `upscale` and `run` commands.
-- Chunking, ETA, and cleanup for long videos.
-- Full menu.
-- V2 PowerShell/bash parity.
+- `run --chunk-seconds auto` uses the non-chunked path in both versions; use an
+  explicit value such as `60`.
+- Native Linux/macOS execution of the bash implementation (validated on Git
+  Bash for Windows and with bash 3.2 syntax checks only).
+- Full real-Upscayl runs of the 7.5/18.5/83 s clips in V2 (validated on 0.5 s,
+  5 s, and 12 s jobs, including chunking).
+- A full real-Upscayl run of the 7.5 s V1 clip (validated as a 1 s window plus
+  full split/assemble).
 
 ## Design
 

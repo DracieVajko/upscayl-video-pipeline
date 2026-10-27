@@ -33,12 +33,13 @@ dependencies in the core repository.
 > assembles the frames back into a video with the original audio/subtitles.
 > Upscayl itself is untouched.
 >
-> V1 (Python) covers split, manual GUI or automated `upscayl-bin` upscaling,
-> all-in-one `run`, chunked processing, and assemble: PNG/JPEG frames, resume,
-> MP4/MKV/ProRes, NVIDIA/AMD/CPU encoding, and a documented Windows Vulkan ICD
+> V1 (Python) and V2 (PowerShell for Windows, bash for Unix; no Python/Node/jq)
+> cover split, manual GUI or automated `upscayl-bin` upscaling, all-in-one
+> `run`, chunked processing, and assemble: PNG/JPEG frames, resume, MP4/MKV/
+> ProRes, NVIDIA/AMD/CPU encoding, and a documented Windows Vulkan ICD
 > workaround for `vkEnumeratePhysicalDevices failed 5` (an old AMD driver can
-> break enumeration; forcing the NVIDIA ICD works). A no-Python PowerShell/bash
-> V2 is planned in the same repository.
+> break enumeration; forcing the NVIDIA ICD works). Both versions share the
+> same `job.txt` contract.
 >
 > Feedback welcome, especially from AMD-only users. If this belongs in the
 > wiki instead of a comment, I'm happy to turn it into a short docs entry.

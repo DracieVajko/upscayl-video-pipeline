@@ -108,6 +108,28 @@ next index. If the remaining files are not contiguous, the tool refuses; use
 Install Python 3.10+ and make sure `py -3` or `python` works. The `.bat`
 launcher tries `py -3` first, then `python`.
 
+## V2 PowerShell will not run
+
+Use `v2\windows\UpscaylVideo.bat`, which calls PowerShell with
+`-ExecutionPolicy Bypass`. If you run the `.ps1` directly, your execution policy
+must allow local scripts, or use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File v2\windows\UpscaylVideo.ps1 doctor
+```
+
+## V2 bash on macOS or Linux
+
+Run it with `bash` (not `sh`) so bash 3.2+ features are available:
+
+```bash
+bash v2/unix/upscayl-video.sh doctor
+```
+
+V2 jobs store paths in the native form for the current OS. A job created under
+Git Bash with POSIX paths is not directly consumable by a Windows-native V1;
+use one version per OS.
+
 ## `--tonemap` is rejected by `assemble`
 
 Tonemapping is a split-stage operation. Re-split with `--tonemap`; it cannot be
