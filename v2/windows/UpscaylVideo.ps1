@@ -4089,6 +4089,11 @@ function Invoke-SplitAll {
             Set-JobValue $job 'upscaled_dir' 'batch00001/out'
             Set-JobValue $job 'layout' 'batches'
             Save-Job $job
+            # Clean old directories to avoid duplication
+            $oldFrames = Join-Path $job.path 'frames'
+            $oldUpscaled = Join-Path $job.path 'upscaled'
+            if (Test-Path -LiteralPath $oldFrames) { Remove-Item -LiteralPath $oldFrames -Recurse -Force }
+            if (Test-Path -LiteralPath $oldUpscaled) { Remove-Item -LiteralPath $oldUpscaled -Recurse -Force }
         }
         New-Item -ItemType Directory -Path (Join-Path $job.path 'batch00001\out') -Force | Out-Null
 

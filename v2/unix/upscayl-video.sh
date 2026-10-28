@@ -2906,6 +2906,7 @@ split_all() {
         if [ -z "$(job_get frames_dir '')" ]; then
             mkdir -p "$JOB_DIR/batch00001" || die 1 "Could not create batch dir"
             mv "$JOB_DIR/frames" "$JOB_DIR/batch00001/in"
+            rm -rf "$JOB_DIR/frames" "$JOB_DIR/upscaled" 2>/dev/null || true
             job_set frames_dir batch00001/in
             job_set upscaled_dir batch00001/out
             job_set layout batches
