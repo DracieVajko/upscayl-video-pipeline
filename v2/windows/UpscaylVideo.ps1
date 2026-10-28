@@ -4906,6 +4906,7 @@ function Get-CommandOptionsSpec {
             & $add 'subs' 'value' $null @('auto', 'copy', 'convert', 'none')
             & $add '10bit' 'flag' 'ten_bit'
             & $add 'keep' 'flag'
+            & "$add 'resume' 'flag'
             & $add 'ffmpeg-args' 'value' $null $null $false
         }
         'assemble' {
@@ -5236,6 +5237,9 @@ function Invoke-Main {
             $jobs = @(Select-Jobs $config $logger)
         }
         if ($jobs.Count -eq 0) { return 0 }
+        if ($opts.ContainsKey('resume')) {
+            $jobs = @($jobs | Where-Object { -not (Test-Path (Join-Path $_.path 'checkpoint')) })
+        }
         $options = @{
             profile = (Get-OptionValue $opts 'profile' 'default')
             preset = (Get-OptionValue $opts 'preset' $null)
@@ -5250,7 +5254,14 @@ function Invoke-Main {
             keep = $opts.ContainsKey('keep')
             ffmpeg_args = if ($opts.ContainsKey('ffmpeg_args')) { @($opts['ffmpeg_args']) } else { @() }
         }
-        return (Invoke-Finish -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun)
+        $result = Invoke-Finish -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun
+        if ($result -eq 0 -and -not $dryRun) {
+            foreach ($job in $jobs) {
+                $ckpt = Join-Path $job.path 'checkpoint'
+                'completed=' + (Get-Date -Format 'o') | Set-Content -LiteralPath $ckpt -Encoding UTF8 -Force
+            }
+        }
+        return $result
     }
 
     if ($command -eq 'model-test') {
@@ -5413,3 +5424,5 @@ try {
     if ($script:Verbose -or $env:UPSCAYL_V2_DEBUG -eq '1') { Write-Err ($_ | Out-String); Write-Err $_.ScriptStackTrace }
     exit 1
 }
+
+

@@ -2968,6 +2968,10 @@ finish_all() {
     local profile preset quality encoder
     for job in "$@"; do
         [ -d "$job" ] || { log_warn "Job not found: $job"; failed=$((failed + 1)); continue; }
+        if [ "${OPT_RESUME:-0}" = "1" ] && [ -f "$job/checkpoint" ]; then
+            log_info "Resume: skipping completed job $(basename "$job")"
+            continue
+        fi
         job_load "$job"
         upscaled_dir=$(job_upscaled_dir)
         count=$(find "$upscaled_dir" -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
@@ -2980,12 +2984,18 @@ finish_all() {
         [ -n "$OPT_PRESET" ] && preset="$OPT_PRESET"
         [ -n "$OPT_ENCODER" ] && encoder="$OPT_ENCODER"
         [ -n "$OPT_QUALITY" ] && quality="$OPT_QUALITY"
+        if [ "${OPT_RESUME:-0}" = "1" ] && [ -f "$JOB_DIR/checkpoint" ]; then
+            log_info "Resume: skipping completed job $(basename "$JOB_DIR")"
+            continue
+        fi
         EN_PRESET="$preset"; EN_ENCODER="$encoder"; EN_QUALITY="$quality"
         EN_TARGET=""; EN_OUTPUT=""; EN_UPSCALED_DIR=""; EN_PICK="error"; EN_VERIFY=0; EN_KEEP_CHUNKS=0
         EN_CLEANUP=1; [ "${OPT_KEEP:-0}" = "1" ] && EN_CLEANUP=0
         if ! run_assemble 0 "$job"; then
             log_error "Failed: $(basename "$job")"
             failed=$((failed + 1))
+        else
+            printf 'completed=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$job/checkpoint"
         fi
     done
     if [ -z "$(find_jobs "$CFG_WORK_DIR")" ]; then
@@ -4666,7 +4676,7 @@ show_help() {
 }
 
 reset_options() {
-    OPT_WORK_DIR=""; OPT_OUTPUT_DIR=""; OPT_INPUT_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""; OPT_PROFILE="default"; OPT_KEEP=0; OPT_NO_TONEMAP=0; OPT_JOB=""
+    OPT_WORK_DIR=""; OPT_OUTPUT_DIR=""; OPT_INPUT_DIR=""; OPT_CONFIG=""; OPT_FFMPEG=""; OPT_PROBEFILE=""; OPT_PROFILE="default"; OPT_KEEP=0; OPT_NO_TONEMAP=0; OPT_JOB=""; OPT_RESUME=0
     OPT_FFPROBE=""; OPT_VERBOSE=0; OPT_QUIET=0; OPT_YES=0; OPT_FORCE=0; OPT_DRY_RUN=0
     OPT_MAX_WORK=""; OPT_MIN_FREE=""
     SP_FPS=""; SP_START=""; SP_END=""; SP_FORMAT="png"; SP_JPEG=1; SP_PNG=3
@@ -4755,6 +4765,7 @@ parse_options() {
             --keep-chunks) EN_KEEP_CHUNKS=1; shift ;;
             --input-dir) need_value "$token" "$#"; OPT_INPUT_DIR="$2"; shift 2 ;;
             --profile) need_value "$token" "$#"; OPT_PROFILE="$2"; case "$OPT_PROFILE" in default|fast|quality) ;; *) die 2 "argument --profile: invalid choice: '$OPT_PROFILE'" ;; esac; shift 2 ;;
+            --resume) OPT_RESUME=1; shift ;;
             --keep) OPT_KEEP=1; shift ;;
             --output) need_value "$token" "$#"; EN_OUTPUT="$2"; shift 2 ;;
             --upscaled-dir) need_value "$token" "$#"; US_UPSCALED_DIR="$2"; EN_UPSCALED_DIR="$2"; shift 2 ;;
