@@ -2975,7 +2975,21 @@ finish_all() {
         fi
         job_load "$job"
         upscaled_dir=$(job_upscaled_dir)
-        count=$(find "$upscaled_dir" -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        frames_dir=$(job_frames_dir)
+        in_count=$(find "$frames_dir" -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        out_count=$(find "$upscaled_dir" -type f -name 'frame_*' 2>/dev/null | wc -l | tr -d ' ')
+        if [ "${OPT_RESUME:-0}" = "1" ]; then
+            if [ -f "$job/checkpoint" ]; then
+                log_info "Resume: skipping completed job $(basename "$job")"
+                continue
+            fi
+            if [ "$in_count" -gt 0 ] && [ "$out_count" -ge "$in_count" ]; then
+                log_info "Resume: job $(basename "$job") already upscaled ($out_count/$in_count) — writing checkpoint"
+                printf 'completed=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$job/checkpoint"
+                continue
+            fi
+        fi
+        count=$out_count
         if [ "$count" -eq 0 ]; then log_warn "Skipping $(basename "$job"): no upscaled frames"; continue; fi
         profile="${OPT_PROFILE:-default}"
         preset=""; quality=""; encoder=""
@@ -2985,8 +2999,8 @@ finish_all() {
         [ -n "$OPT_PRESET" ] && preset="$OPT_PRESET"
         [ -n "$OPT_ENCODER" ] && encoder="$OPT_ENCODER"
         [ -n "$OPT_QUALITY" ] && quality="$OPT_QUALITY"
-        if [ "${OPT_RESUME:-0}" = "1" ] && [ -f "$JOB_DIR/checkpoint" ]; then
-            log_info "Resume: skipping completed job $(basename "$JOB_DIR")"
+        if [ "${OPT_RESUME:-0}" = "1" ] && [ -f "$job/checkpoint" ]; then
+            log_info "Resume: skipping completed job $(basename "$job")"
             continue
         fi
         EN_PRESET="$preset"; EN_ENCODER="$encoder"; EN_QUALITY="$quality"

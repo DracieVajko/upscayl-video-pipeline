@@ -4158,8 +4158,23 @@ function Invoke-Finish {
     $done = 0; $skipped = 0; $failed = 0
     foreach ($job in $Jobs) {
         $upscaledDir = Get-JobUpscaledDir $job
+        $framesDir = Get-JobFramesDir $job
+        $inFrames = @(Get-ChildItem -LiteralPath $framesDir -Recurse -File -Filter 'frame_*' -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 }).Count
+        $upscaledDir = Get-JobUpscaledDir $job
         $count = @(Get-ChildItem -LiteralPath $upscaledDir -Recurse -File -Filter 'frame_*' -ErrorAction SilentlyContinue |
             Where-Object { $_.Length -gt 0 }).Count
+        if ($Options.resume) {
+            if ($inFrames -gt 0 -and $count -ge $inFrames) {
+                Write-Info ('Resume: job ' + [IO.Path]::GetFileName($job.path) + ' complete (' + $count + '/' + $inFrames + ') — skipping')
+                $skipped++
+                continue
+            }
+            if (Test-Path (Join-Path $job.path 'checkpoint')) {
+                Write-Info ('Resume: skipping completed job ' + [IO.Path]::GetFileName($job.path))
+                $skipped++
+                continue
+            }
+        }
         if ($count -eq 0) {
             Write-Info ('Skipping ' + [IO.Path]::GetFileName($job.path) + ': no upscaled frames')
             $skipped++

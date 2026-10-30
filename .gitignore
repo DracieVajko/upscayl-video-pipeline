@@ -39,6 +39,7 @@ venv/
 
 # Agent/planning scratch
 .superpowers/
+.desloppify/
 
 # IDE and OS metadata
 .idea/
