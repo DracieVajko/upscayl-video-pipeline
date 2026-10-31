@@ -27,6 +27,8 @@ from .pipeline import (
     run_upscale,
 )
 from .util import Logger
+from .model_test import ModelTestOptions, run_model_test
+from .workspace import SplitAllOptions, run_split_all
 
 
 def _global_parent() -> argparse.ArgumentParser:
@@ -301,8 +303,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             tool_dir=Path(__file__).resolve().parents[2],
         )
         if args.command == "model-test":
-            from .model_test import ModelTestOptions, run_model_test
-
             return run_model_test(
                 Path(args.video),
                 config,
@@ -324,8 +324,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger,
             )
         if args.command == "split-all":
-            from .workspace import SplitAllOptions, run_split_all
-
             return run_split_all(
                 config,
                 SplitAllOptions(

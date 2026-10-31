@@ -17,6 +17,7 @@ from .upscayl import (
     resolve_icd,
     smoke_test,
 )
+from .encode import parse_available_encoders
 from .util import Logger, human_bytes, run_command
 
 
@@ -171,8 +172,6 @@ def check_upscayl(
 
 
 def check_encoder_smoke(config: Config, logger: Logger) -> list[CheckResult]:
-    from .encode import parse_available_encoders
-
     available = parse_available_encoders(config.ffmpeg)
     results: list[CheckResult] = []
     for name in (
