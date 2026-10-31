@@ -1874,3 +1874,8 @@ Results are summarized in section 5. No system settings were changed during rese
 ## Appendix D — Open questions
 
 None. All design decisions are resolved in section 16. If the user requests a change during implementation, it must be recorded in this spec before the affected phase starts.
+#   S U P E R S E D E D   N O T E  
+ T h i s   s p e c   i s   s u p e r s e d e d   b y   d o c s / U S A G E . m d ,   C H A N G E L O G . m d ,   a n d   R E A D M E . m d   a s   o f   r e l e a s e   0 . 3 . 2 .   C o m p o n e n t   l i s t   u p d a t e d   b e l o w .  
+ U p d a t e d   c o m p o n e n t s :   c l i ,   c o n f i g ,   j o b ,   p r o b e ,   f r a m e s ,   u p s c a y l ,   e n c o d e ,   d i s k ,   c h u n k i n g ,   p i p e l i n e ,   d o c t o r ,   m e n u ,   m o d e l _ t e s t ,   w o r k s p a c e ,   p r o g r e s s ,   u t i l ,   e r r o r s   ( 1 6   m o d u l e s )  
+ U p d a t e d   c o m m a n d s :   d o c t o r ,   s p l i t ,   s p l i t - a l l ,   m o d e l - t e s t ,   u p s c a l e ,   a s s e m b l e ,   f i n i s h ,   r u n ,   s t a t u s ,   c l e a n   ( 1 0   c o m m a n d s )  
+ 
