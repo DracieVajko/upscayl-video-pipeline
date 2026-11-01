@@ -133,6 +133,11 @@ def parse_available_encoders(ffmpeg: Path) -> set[str]:
     return names
 
 
+def reset_available_encoders() -> None:
+    """Reset the process-global encoder availability cache (test/reset seam)."""
+    _AVAILABLE_CACHE.clear()
+
+
 def apply_quality(choice: EncoderChoice, quality: str) -> EncoderChoice:
     level = str(quality).strip().lower()
     if level not in _QUALITY_LEVELS:
