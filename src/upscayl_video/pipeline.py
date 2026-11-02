@@ -51,6 +51,7 @@ from .probe import (
     parse_rational,
     probe_first_frame_dimensions,
     probe_media,
+    require_sdr,
 )
 from .progress import Progress
 from .upscayl import (
@@ -361,10 +362,7 @@ def run_split(
             )
         scale, target_height = _resolve_scale(media, options, job, config)
         if media.hdr and not options.tonemap:
-            raise ValidationError(
-                "HDR source detected. Upscayl models are 8-bit SDR.",
-                hint="Re-run with --tonemap to convert HDR to SDR BT.709.",
-            )
+            require_sdr(media, options.tonemap)
         if not media.hdr and any(bit in media.pix_fmt.lower() for bit in ("10", "12", "16")):
             logger.warn(
                 "10-bit SDR source: frames will be converted to 8-bit RGB for Upscayl."
@@ -602,10 +600,7 @@ def _prepare_chunk_job(
     job = Job.create_or_open(config.work_dir, source, logger)
     logger.set_log_file(job.logs_dir / "run.log")
     if media.hdr and not options.split.tonemap:
-        raise ValidationError(
-            "HDR source detected. Upscayl models are 8-bit SDR.",
-            hint="Re-run with --tonemap to convert HDR to SDR BT.709.",
-        )
+        require_sdr(media, options.split.tonemap)
     job.update_from_media(media)
     if options.split.tonemap:
         job.set("color_primaries", "bt709")

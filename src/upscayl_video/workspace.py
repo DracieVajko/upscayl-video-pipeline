@@ -17,7 +17,11 @@ from .errors import PipelineError, UsageError, ValidationError
 from .frames import scan_frames
 from .job import Job
 from .pipeline import SplitOptions, find_jobs, run_assemble, run_split
-from .probe import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS, probe_media
+from .probe import (
+    VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS,
+    probe_media,
+    require_sdr,
+)
 from .util import Logger, atomic_write_text, format_clock, run_command
 
 _BLOCKED_FFMPEG_ARGS = {
@@ -100,11 +104,7 @@ def _split_one(
     logger: Logger,
 ) -> Job:
     tonemap = media.hdr if options.tonemap is None else options.tonemap
-    if media.hdr and not tonemap:
-        raise ValidationError(
-            "HDR source detected. Upscayl models are 8-bit SDR.",
-            hint="Re-run with --tonemap to convert HDR to SDR BT.709.",
-        )
+    require_sdr(media, tonemap)
     split = SplitOptions(
         fps=None,
         start=None,
@@ -267,7 +267,7 @@ def run_split_all(config: Config, options: SplitAllOptions, logger: Logger) -> i
             + (" [HDR]" if media.hdr else "")
         )
 
-    logger.info(f"Inputs: {len(sources)} Â· frames: {total_frames} Â· work: {config.work_dir}")
+    logger.info(f"Inputs: {len(sources)} ???? frames: {total_frames} ???? work: {config.work_dir}")
     if options.dry_run:
         logger.info("Dry run: nothing written.")
         return 0
@@ -329,7 +329,7 @@ def _select_jobs(jobs: Sequence[Job], options: FinishOptions) -> list[Job]:
     for index, job in enumerate(jobs, 1):
         count = _upscaled_count(job)
         expected = job.get("frame_count") or "?"
-        print(f"  {index}) {job.job_id} â€” {count}/{expected} upscaled")
+        print(f"  {index}) {job.job_id} ???????? {count}/{expected} upscaled")
     answer = input("Job number or 'a' for all: ").strip().lower()
     if answer in {"a", "all"}:
         return list(jobs)
@@ -405,7 +405,7 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
             failures.append((job.job_id, str(exc)))
 
     _write_manifest(config, find_jobs(config.work_dir))
-    logger.info(f"Finished: {done} Â· skipped: {skipped} Â· failed: {len(failures)}")
+    logger.info(f"Finished: {done} ???? skipped: {skipped} ???? failed: {len(failures)}")
     if failures:
         for job_id, message in failures:
             logger.error(f"  {job_id}: {message}")

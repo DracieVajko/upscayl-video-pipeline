@@ -13,7 +13,7 @@ from pathlib import Path
 from .config import Config
 from .errors import CommandError, EncodeError, ValidationError
 from .job import Job
-from .probe import MediaInfo
+from .probe import MediaInfo, require_sdr
 from .util import Logger, run_command
 
 _FRAME_RE = re.compile(
@@ -410,10 +410,7 @@ def extract_frames(
     if expected <= 0:
         return 0
     if media.hdr and not tonemap:
-        raise ValidationError(
-            "HDR source detected. Upscayl models are 8-bit SDR.",
-            hint="Re-run with --tonemap to convert HDR to SDR BT.709.",
-        )
+        require_sdr(media, tonemap)
     if tonemap and not media.hdr:
         logger.warn("--tonemap was requested for a non-HDR source; applying the SDR conversion anyway")
 
