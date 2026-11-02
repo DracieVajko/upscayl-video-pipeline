@@ -1,4 +1,4 @@
-﻿"""Small interactive menu for the core pipeline."""
+"""Small interactive menu for the core pipeline."""
 
 from __future__ import annotations
 

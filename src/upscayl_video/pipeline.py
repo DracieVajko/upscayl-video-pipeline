@@ -925,6 +925,7 @@ def run_all(
     logger: Logger,
     *,
     dry_run: bool = False,
+    assume_yes: bool = False,
 ) -> list[RunResult]:
     if len(inputs) > 1 and options.encode.output is not None:
         requested = Path(options.encode.output).expanduser()
@@ -946,6 +947,7 @@ def run_all(
                 options.split,
                 logger,
                 dry_run=True,
+                assume_yes=assume_yes,
                 keep_dry_run_job=True,
             )
             job = jobs[0]
@@ -1016,7 +1018,7 @@ def run_all(
             continue
         job: Job | None = None
         try:
-            job = run_split([input_path], config, options.split, logger)[0]
+            job = run_split([input_path], config, options.split, logger, assume_yes=assume_yes)[0]
             run_upscale([job], config, options.upscale, logger)
             outputs = run_assemble([job], config, options.encode, logger)
             output = outputs[0] if outputs else None

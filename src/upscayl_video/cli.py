@@ -1,4 +1,4 @@
-﻿"""Command-line interface for the V1 core pipeline."""
+"""Command-line interface for the V1 core pipeline."""
 
 from __future__ import annotations
 
@@ -29,6 +29,27 @@ from .pipeline import (
 from .util import Logger
 from .model_test import ModelTestOptions, run_model_test
 from .workspace import SplitAllOptions, run_split_all
+
+
+def _bounded_int(text: str, *, name: str, low: int, high: int) -> int:
+    """Parse an int and reject values outside the documented range."""
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"{name} must be an integer between {low} and {high}"
+        ) from exc
+    if not low <= value <= high:
+        raise argparse.ArgumentTypeError(f"{name} must be between {low} and {high}")
+    return value
+
+
+def _jpeg_quality(text: str) -> int:
+    return _bounded_int(text, name="--jpeg-quality", low=1, high=31)
+
+
+def _png_compression(text: str) -> int:
+    return _bounded_int(text, name="--png-compression", low=0, high=9)
 
 
 def _global_parent() -> argparse.ArgumentParser:
@@ -73,8 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     split.add_argument("--start", default=None, help="Trim start (SS, MM:SS, or HH:MM:SS)")
     split.add_argument("--end", default=None, help="Trim end (SS, MM:SS, or HH:MM:SS)")
     split.add_argument("--format", choices=("png", "jpg"), default="png")
-    split.add_argument("--jpeg-quality", type=int, default=1)
-    split.add_argument("--png-compression", type=int, default=3)
+    split.add_argument("--jpeg-quality", type=_jpeg_quality, default=1)
+    split.add_argument("--png-compression", type=_png_compression, default=3)
     split.add_argument("--denoise", choices=("none", "light", "medium", "strong"), default="none")
     split.add_argument("--tonemap", action="store_true")
     split.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="auto")
@@ -109,8 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[parent],
     )
     split_all.add_argument("--format", choices=("png", "jpg"), default="png")
-    split_all.add_argument("--png-compression", type=int, default=1)
-    split_all.add_argument("--jpeg-quality", type=int, default=1)
+    split_all.add_argument("--png-compression", type=_png_compression, default=1)
+    split_all.add_argument("--jpeg-quality", type=_jpeg_quality, default=1)
     split_all.add_argument("--denoise", choices=("none", "light", "medium", "strong"), default="none")
     split_all.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="auto")
     split_all.add_argument("--tonemap", dest="tonemap", action="store_true", default=None)
@@ -193,8 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--start", default=None)
     run.add_argument("--end", default=None)
     run.add_argument("--format", choices=("png", "jpg"), default="png")
-    run.add_argument("--jpeg-quality", type=int, default=1)
-    run.add_argument("--png-compression", type=int, default=3)
+    run.add_argument("--jpeg-quality", type=_jpeg_quality, default=1)
+    run.add_argument("--png-compression", type=_png_compression, default=3)
     run.add_argument("--denoise", choices=("none", "light", "medium", "strong"), default="none")
     run.add_argument("--tonemap", action="store_true")
     run.add_argument("--decode", choices=("cpu", "gpu", "auto"), default="auto")
@@ -501,6 +522,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 logger,
                 dry_run=bool(getattr(args, "dry_run", False)),
+                assume_yes=bool(getattr(args, "yes", False)),
             )
             failed = [result for result in results if result.error]
             return 1 if failed else 0

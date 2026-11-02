@@ -1,4 +1,4 @@
-﻿"""Discovery and sizing helpers for Upscayl's CLI and models."""
+"""Discovery and sizing helpers for Upscayl's CLI and models."""
 
 from __future__ import annotations
 

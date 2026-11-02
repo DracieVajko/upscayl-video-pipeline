@@ -609,6 +609,7 @@ def build_segment_command(
         args.extend(["-f", "mov"])
     else:
         args.extend(["-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts"])
+    args.extend(options.ffmpeg_args)
     args.append(str(output))
     return args
 
@@ -661,6 +662,7 @@ def build_mux_command(
         args.extend(["-movflags", "+faststart"])
     if preset.codec == "hevc" and preset.container in {"mp4", "mov"}:
         args.extend(["-tag:v", "hvc1"])
+    args.extend(options.ffmpeg_args)
     args.append(str(output))
     return args
 
