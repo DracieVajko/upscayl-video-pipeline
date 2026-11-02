@@ -380,28 +380,18 @@ def run_split(
                 "the output uses square pixels and may not preserve display aspect ratio."
             )
 
-        job.update_from_media(media)
-        if options.tonemap:
-            job.set("color_primaries", "bt709")
-            job.set("color_trc", "bt709")
-            job.set("colorspace", "bt709")
-            job.set("color_range", "tv")
-            job.set("hdr", False)
-        job.set("duration", f"{processed_duration:.3f}")
-        job.set("range_start", f"{start:.3f}")
-        job.set("range_end", "" if options.end is None else f"{end:.3f}")
-        job.set("scale", scale)
-        job.set("target_height", "" if target_height is None else target_height)
-        job.set("model", options.model)
-        job.set("frame_format", options.format.lower())
-        job.set("frame_pattern", frame_pattern(options.format))
+        _store_split_settings(
+            job,
+            media,
+            options,
+            start=start,
+            end=end,
+            duration=processed_duration,
+            scale=scale,
+            target_height=target_height,
+        )
         job.set("chunk_seconds", 0)
         job.set("chunk_frames", 0)
-        job.set("denoise", options.denoise)
-        job.set("decode", options.decode)
-        job.set("tonemap", options.tonemap)
-        job.set("png_compression", options.png_compression)
-        job.set("jpeg_quality", options.jpeg_quality)
         if not dry_run:
             job.save()
 
@@ -575,6 +565,40 @@ def run_upscale(
     return results
 
 
+def _store_split_settings(
+    job: Job,
+    media: MediaInfo,
+    options: SplitOptions,
+    *,
+    start: float,
+    end: float,
+    duration: float,
+    scale: int,
+    target_height: int | None,
+) -> None:
+    """Persist the split-stage contract once, for both staged and chunked runs."""
+    job.update_from_media(media)
+    if options.tonemap:
+        job.set("color_primaries", "bt709")
+        job.set("color_trc", "bt709")
+        job.set("colorspace", "bt709")
+        job.set("color_range", "tv")
+        job.set("hdr", False)
+    job.set("duration", f"{duration:.3f}")
+    job.set("range_start", f"{start:.3f}")
+    job.set("range_end", "" if options.end is None else f"{end:.3f}")
+    job.set("scale", scale)
+    job.set("target_height", "" if target_height is None else target_height)
+    job.set("model", options.model)
+    job.set("frame_format", options.format.lower())
+    job.set("frame_pattern", frame_pattern(options.format))
+    job.set("denoise", options.denoise)
+    job.set("decode", options.decode)
+    job.set("tonemap", options.tonemap)
+    job.set("png_compression", options.png_compression)
+    job.set("jpeg_quality", options.jpeg_quality)
+
+
 def _prepare_chunk_job(
     source: Path,
     config: Config,
@@ -598,27 +622,19 @@ def _prepare_chunk_job(
     logger.set_log_file(job.logs_dir / "run.log")
     if media.hdr and not options.split.tonemap:
         require_sdr(media, options.split.tonemap)
-    job.update_from_media(media)
-    if options.split.tonemap:
-        job.set("color_primaries", "bt709")
-        job.set("color_trc", "bt709")
-        job.set("colorspace", "bt709")
-        job.set("color_range", "tv")
-        job.set("hdr", False)
     scale, target = _resolve_scale(media, options.split, job, config)
     fps = media.fps_decimal or 30.0
     total_frames = int(round(duration * fps))
-    job.set("duration", f"{duration:.3f}")
-    job.set("range_start", f"{start:.3f}")
-    job.set("range_end", "" if options.split.end is None else f"{end:.3f}")
-    job.set("scale", scale)
-    job.set("target_height", "" if target is None else target)
-    job.set("model", options.split.model)
-    job.set("frame_format", options.split.format)
-    job.set("frame_pattern", frame_pattern(options.split.format))
-    job.set("denoise", options.split.denoise)
-    job.set("decode", options.split.decode)
-    job.set("tonemap", options.split.tonemap)
+    _store_split_settings(
+        job,
+        media,
+        options.split,
+        start=start,
+        end=end,
+        duration=duration,
+        scale=scale,
+        target_height=target,
+    )
     job.set("frame_count", total_frames)
     job.set("upscaled_count", 0)
     job.set("chunk_seconds", chunk_seconds)
