@@ -2,17 +2,39 @@
 
 All notable changes to this project will be documented here.
 
-## [Unreleased]
+## [0.3.3] — 2026-11-03
 
 ### Added
 
-- PowerShell `split-all` and `finish` (workspace flow): `input_dir`,
-  `batch00001/in|out`, audio extraction, manifest, and output publishing.
+- `--resume` for `finish`: completed jobs are skipped via `work/<job>/checkpoint`,
+  and a job whose `batch00001/out` already covers `batch00001/in` is treated as
+  done without re-encoding.
+- V2 PowerShell `model-test` command and `--ffmpeg-args` for `finish`.
+- V2 bash `split-all`, `finish`, and `model-test` entry points.
+- `simple-flow.ps1` / `simple-flow.sh` helpers with a configurable work directory.
 
-### Not yet
+### Fixed
 
-- Bash ports of `split-all` and `finish`.
-- V2 PowerShell/bash `model-test`.
+- `split-all` no longer leaves a duplicate `frames/` (or `upscaled/`) beside
+  `batch00001/in`; the legacy layout is converted once and the source removed.
+- `--ffmpeg-args` denylist matched only exact tokens, so `-filter:v:0`, `-c:v`,
+  `-af`, `-ss`, and `-pix_fmt` slipped through. It now matches the base option
+  name, and V2 PowerShell enforces the same list (it previously had none).
+- PowerShell `finish` option table had a malformed line that made the whole
+  script fail to parse.
+- `split-all` and `split` now share one video-extension set, so `.ts`, `.wmv`,
+  `.flv`, `.mpg`, `.mpeg`, `.ogv`, and `.mts` are accepted by both.
+- `job.txt` last-error persistence and `.partial` cleanup were copied in every
+  stage; they now live in `Job.record_error` / `Job.clear_error` /
+  `util.discard_file`.
+- HDR refusal is one `probe.require_sdr` guard instead of five copies.
+- Time formatting is one `util.format_clock` helper instead of two divergent
+  copies.
+- UTF-8 BOM and CRLF drift removed from the edited V1 modules.
+
+### Changed
+
+- Version is `0.3.3` in V1, V2 PowerShell, V2 bash, and the launcher tests.
 
 ## [0.3.1] — 2026-10-27
 

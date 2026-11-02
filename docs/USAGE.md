@@ -1,10 +1,10 @@
-# Usage
+﻿# Usage
 
 The pipeline supports three workflows:
 
-1. **Split only** → upscale manually in the Upscayl GUI → **assemble**.
+1. **Split only** â†’ upscale manually in the Upscayl GUI â†’ **assemble**.
 2. **Split** and **assemble** with a different external upscaler.
-3. **Automated `run`**: split → `upscayl-bin` → assemble, with resume and
+3. **Automated `run`**: split â†’ `upscayl-bin` â†’ assemble, with resume and
    chunking.
 
 V1 (Python) and V2 (PowerShell/bash) use the same commands, flags, and
@@ -143,7 +143,7 @@ upscayl-video upscale <job...> [--all] \
 Runs Upscayl's CLI in bounded batches, restarting the process after each batch
 to avoid its memory leak. Missing frames are retried; existing valid outputs
 are skipped. Accepts one job folder or the work directory. `auto` tile uses
-VRAM: 128 for 4 GiB, 256 for 6–8 GiB, 512 above.
+VRAM: 128 for 4 GiB, 256 for 6â€“8 GiB, 512 above.
 `--icd auto` finds the NVIDIA Vulkan ICD on Windows; this is the workaround for
 the AMD `vkEnumeratePhysicalDevices failed 5` error. If the projected time
 exceeds one hour, the command asks for confirmation; `--yes` skips the prompt.
@@ -161,7 +161,7 @@ Scans `input_dir` (default `input` next to `config.txt`), splits every video
 into `work/<job>/batch00001/in`, extracts every audio track to
 `work/<job>/audio`, creates `batch00001/out`, and writes `work/manifest.csv`
 plus `work/README-UPScayl.txt`. HDR is tonemapped by default. Point the
-Upscayl GUI at `batch00001/in` and `batch00001/out`. V1 only for now.
+Upscayl GUI at `batch00001/in` and `batch00001/out`.
 
 ### `finish`
 
@@ -176,7 +176,8 @@ upscayl-video finish [--all] [--job NAME ...] \
 Assembles jobs from `work/`, moves each video to `output_dir`, and removes the
 whole job folder. Without `--all` or `--job`, it lists jobs and asks. `--keep`
 keeps the work folder. `--ffmpeg-args` appends extra FFmpeg flags; structural
-flags (`-i`, `-map`, filters, `-y`, `-f`) are rejected. V1 only for now.
+flags (`-i`, `-map`, `-vf`, `-af`, `-c`, `-ss`, `-f`, `-y`) are rejected; the
+check matches the base option name, so `-filter:v:0` is rejected too.
 
 ### `model-test`
 
@@ -192,8 +193,8 @@ Samples `--frames` frames spread across the clip, upscales each one with every
 discovered model, and writes an HTML report to
 `work/_model_tests/<video>/<timestamp>/report.html`. `--seed` reproduces the
 frame choice. `--model` limits the run to named models. The test folder is not
-a job; `status` and `clean` ignore it. This command is V1-only for now; the V2
-port is a follow-up.
+a job; `status` and `clean` ignore it. V1 runs every model. The V2 runtimes
+accept the command but currently only write the manifest skeleton.
 
 ### `run`
 
@@ -203,7 +204,7 @@ upscayl-video run <video...> [split/upscale/assemble options] \
   [--max-work-gb N] [--min-free-gb N] [--yes]
 ```
 
-One command per video: split → upscale → assemble. Continues to the next input
+One command per video: split â†’ upscale â†’ assemble. Continues to the next input
 after a failure unless `--stop-on-error`. `--cleanup` moves the video to
 `output_dir` and removes the job folder after success; `--keep-chunks` keeps
 per-chunk intermediates.

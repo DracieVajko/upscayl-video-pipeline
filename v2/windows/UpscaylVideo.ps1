@@ -9,7 +9,7 @@
 #>
 
 $ErrorActionPreference = 'Stop'
-$script:V2Version = '0.3.1'
+$script:V2Version = '0.3.3'
 $script:ProgramName = 'upscayl-video'
 $script:ToolDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $script:LogFile = $null

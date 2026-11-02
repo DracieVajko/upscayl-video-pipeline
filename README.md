@@ -78,8 +78,7 @@ for the original root.
   ends up empty.
 - **V2 parity:** the same commands, flags, contract, presets, audio/subtitle
   rules, exit codes, chunking, resume, doctor, and menu in PowerShell and bash.
-  PowerShell also has `split-all` and `finish`; the bash ports and the V2
-  `model-test` are a follow-up.
+  Both runtimes also ship `split-all`, `finish`, and `model-test`.
 
 V2 bash has been exercised on Git Bash for Windows and with syntax checks for
 bash 3.2, but not on native Linux/macOS. Details in
