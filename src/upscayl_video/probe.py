@@ -11,6 +11,12 @@ from typing import Any, Mapping
 from .errors import CommandError, ValidationError
 from .util import Logger, parse_time, run_command
 
+# Single source of truth for "this file is a video" across every command.
+VIDEO_EXTENSIONS = frozenset({
+    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
+    ".mts", ".wmv", ".flv", ".mpg", ".mpeg", ".ogv",
+})
+
 
 @dataclass(frozen=True)
 class StreamInfo:

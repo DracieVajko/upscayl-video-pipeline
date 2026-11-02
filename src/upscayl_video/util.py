@@ -212,6 +212,17 @@ def format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
 
+def format_clock(seconds: float) -> str:
+    """Format a duration as M:SS.mmm, or H:MM:SS.mmm once hours are present."""
+    seconds = max(0.0, float(seconds))
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    rest = seconds % 60
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{rest:06.3f}"
+    return f"{minutes:02d}:{rest:06.3f}"
+
+
 def sanitize_job_id(stem: str) -> str:
     """Create a readable, cross-platform job folder name from a stem."""
 

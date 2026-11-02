@@ -17,19 +17,9 @@ from .errors import PipelineError, UsageError, ValidationError
 from .frames import scan_frames
 from .job import Job
 from .pipeline import SplitOptions, find_jobs, run_assemble, run_split
-from .probe import probe_media
-from .util import Logger, atomic_write_text, run_command
+from .probe import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS, probe_media
+from .util import Logger, atomic_write_text, format_clock, run_command
 
-_VIDEO_EXTENSIONS = {
-    ".mp4",
-    ".mov",
-    ".mkv",
-    ".avi",
-    ".webm",
-    ".m4v",
-    ".mts",
-    ".m2ts",
-}
 _BLOCKED_FFMPEG_ARGS = {
     "-i",
     "-map",
@@ -100,14 +90,6 @@ def _video_inputs(directory: Path) -> list[Path]:
         for path in directory.rglob("*")
         if path.is_file() and path.suffix.lower() in _VIDEO_EXTENSIONS
     )
-
-
-def _format_time(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    rest = seconds % 60
-    return f"{hours:d}:{minutes:02d}:{rest:06.3f}" if hours else f"{minutes:02d}:{rest:06.3f}"
 
 
 def _split_one(
@@ -280,12 +262,12 @@ def run_split_all(config: Config, options: SplitAllOptions, logger: Logger) -> i
         frames = int(round(media.duration * media.fps_decimal))
         total_frames += max(frames, 0)
         logger.info(
-            f"{source.name}: {_format_time(media.duration)}, "
+            f"{source.name}: {format_clock(media.duration)}, "
             f"{frames} frames, {media.width}x{media.height}"
             + (" [HDR]" if media.hdr else "")
         )
 
-    logger.info(f"Inputs: {len(sources)} · frames: {total_frames} · work: {config.work_dir}")
+    logger.info(f"Inputs: {len(sources)} Â· frames: {total_frames} Â· work: {config.work_dir}")
     if options.dry_run:
         logger.info("Dry run: nothing written.")
         return 0
@@ -347,7 +329,7 @@ def _select_jobs(jobs: Sequence[Job], options: FinishOptions) -> list[Job]:
     for index, job in enumerate(jobs, 1):
         count = _upscaled_count(job)
         expected = job.get("frame_count") or "?"
-        print(f"  {index}) {job.job_id} — {count}/{expected} upscaled")
+        print(f"  {index}) {job.job_id} â€” {count}/{expected} upscaled")
     answer = input("Job number or 'a' for all: ").strip().lower()
     if answer in {"a", "all"}:
         return list(jobs)
@@ -423,7 +405,7 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
             failures.append((job.job_id, str(exc)))
 
     _write_manifest(config, find_jobs(config.work_dir))
-    logger.info(f"Finished: {done} · skipped: {skipped} · failed: {len(failures)}")
+    logger.info(f"Finished: {done} Â· skipped: {skipped} Â· failed: {len(failures)}")
     if failures:
         for job_id, message in failures:
             logger.error(f"  {job_id}: {message}")

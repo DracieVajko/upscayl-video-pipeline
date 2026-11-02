@@ -24,7 +24,7 @@ from .upscayl import (
     resolve_icd,
     resolve_tile,
 )
-from .util import Logger, atomic_write_text, human_bytes, run_command, sanitize_job_id
+from .util import Logger, atomic_write_text, format_clock, human_bytes, run_command, sanitize_job_id
 
 
 @dataclass(frozen=True)
@@ -135,16 +135,6 @@ def _filter_models(
     return selected
 
 
-def _format_time(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    rest = seconds % 60
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{rest:06.3f}"
-    return f"{minutes:02d}:{rest:06.3f}"
-
-
 def _collect_images(directory: Path) -> dict[int, Path]:
     result: dict[int, Path] = {}
     files = sorted(
@@ -239,13 +229,13 @@ def _report_html(
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>Model test — {html.escape(video.name)}</title>",
+        f"<title>Model test â€” {html.escape(video.name)}</title>",
         f"<style>{_CSS}</style></head><body>",
-        f"<h1>Model test — {html.escape(video.name)}</h1>",
+        f"<h1>Model test â€” {html.escape(video.name)}</h1>",
         (
-            f'<div class="meta">{media.width}×{media.height} · '
-            f"{_format_time(media.duration)} · seed {seed} · "
-            f"{len(models)} models · {len(timestamps)} frames</div>"
+            f'<div class="meta">{media.width}Ã—{media.height} Â· '
+            f"{format_clock(media.duration)} Â· seed {seed} Â· "
+            f"{len(models)} models Â· {len(timestamps)} frames</div>"
         ),
         (
             '<p class="note">Compare details at 100 % (click an image). '
@@ -255,7 +245,7 @@ def _report_html(
     ]
     for position, timestamp in enumerate(timestamps, 1):
         index = position
-        parts.append(f"<h2>Frame {position} — {_format_time(timestamp)}</h2>")
+        parts.append(f"<h2>Frame {position} â€” {format_clock(timestamp)}</h2>")
         parts.append('<div class="grid">')
         parts.append(_card(test_dir, "Original", originals.get(index), original=True))
         for name in models:
@@ -328,8 +318,8 @@ def run_model_test(
 
     total = len(models) * len(timestamps)
     logger.info(f"Video: {video}")
-    logger.info(f"Duration: {_format_time(media.duration)} · {media.width}×{media.height}")
-    logger.info("Frames: " + ", ".join(_format_time(value) for value in timestamps))
+    logger.info(f"Duration: {format_clock(media.duration)} Â· {media.width}Ã—{media.height}")
+    logger.info("Frames: " + ", ".join(format_clock(value) for value in timestamps))
     logger.info(f"Seed: {seed}")
     logger.info(f"Models ({len(models)}): " + ", ".join(name for name, _ in models))
     logger.info(f"Upscales to run: {total} (scale {scale})")
@@ -350,7 +340,7 @@ def run_model_test(
     paths = discover_upscayl(config)
     placeholder = Job(test_dir, {})
     for index, timestamp in enumerate(timestamps, 1):
-        logger.info(f"Extract {index}/{len(timestamps)} at {_format_time(timestamp)}")
+        logger.info(f"Extract {index}/{len(timestamps)} at {format_clock(timestamp)}")
         command = build_split_command(
             video,
             placeholder,

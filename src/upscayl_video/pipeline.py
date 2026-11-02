@@ -1,4 +1,4 @@
-﻿"""Pipeline orchestration for split, assemble, status, and clean."""
+"""Pipeline orchestration for split, assemble, status, and clean."""
 
 from __future__ import annotations
 
@@ -45,7 +45,13 @@ from .frames import (
     validate_frame_set,
 )
 from .job import Job, find_jobs
-from .probe import MediaInfo, parse_rational, probe_first_frame_dimensions, probe_media
+from .probe import (
+    VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS,
+    MediaInfo,
+    parse_rational,
+    probe_first_frame_dimensions,
+    probe_media,
+)
 from .progress import Progress
 from .upscayl import (
     detect_vram_mb,
@@ -64,11 +70,6 @@ from .util import (
     parse_time,
     run_command,
 )
-
-_VIDEO_EXTENSIONS = {
-    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".m2ts",
-    ".wmv", ".flv", ".mpg", ".mpeg", ".ogv",
-}
 
 
 @dataclass(frozen=True)
