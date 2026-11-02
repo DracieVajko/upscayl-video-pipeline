@@ -223,7 +223,7 @@ def format_clock(seconds: float) -> str:
     return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
 
-def discard_file(path) -> None:
+def discard_file(path: Path | None) -> None:
     """Delete a best-effort temporary file, ignoring filesystem errors."""
     if path is None:
         return

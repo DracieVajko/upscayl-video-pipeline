@@ -11,10 +11,42 @@ from upscayl_video.errors import ValidationError
 from upscayl_video.job import Job
 from upscayl_video.util import Logger
 from upscayl_video.workspace import (
+    FinishOptions,
     _convert_layout,
     _write_manifest,
     parse_ffmpeg_args,
+    run_finish,
 )
+
+
+class FinishDryRunTests(unittest.TestCase):
+    def test_finish_options_carry_dry_run(self) -> None:
+        self.assertTrue(FinishOptions(dry_run=True).dry_run)
+        self.assertFalse(FinishOptions().dry_run)
+
+    def test_dry_run_previews_without_assembling(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job_dir = root / "work" / "clip"
+            (job_dir / "batch00001" / "out").mkdir(parents=True)
+            (job_dir / "batch00001" / "in").mkdir(parents=True)
+            (job_dir / "batch00001" / "out" / "frame_00000001.png").write_bytes(b"x")
+            (job_dir / "job.txt").write_text(
+                "source=" + str(root / "clip.mp4") + "\n"
+                "frames_dir=batch00001/in\n"
+                "upscaled_dir=batch00001/out\n",
+                encoding="utf-8",
+            )
+            config = SimpleNamespace(
+                work_dir=root / "work",
+                output_dir=root / "output",
+                default_preset="mp4-h264",
+                default_encoder="cpu",
+            )
+            logger = Logger()
+            code = run_finish(config, FinishOptions(all_jobs=True, dry_run=True), logger)
+            self.assertEqual(code, 0)
+            self.assertFalse((root / "output").exists())
 
 
 class JobLayoutTests(unittest.TestCase):

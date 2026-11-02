@@ -363,6 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     keep=args.keep,
                     force=bool(getattr(args, "force", False)),
                     assume_yes=bool(getattr(args, "yes", False)),
+                    dry_run=bool(getattr(args, "dry_run", False)),
                 ),
                 logger,
             )

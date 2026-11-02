@@ -25,6 +25,8 @@ class DiskEstimate:
     upscaled_bytes: int
     total_bytes: int
     free_bytes: int
+    #: True when ``free_bytes >= total_bytes``. The ``min_free_gb`` floor is a
+    #: policy input to :func:`check_estimate` and is deliberately not baked in.
     fits: bool
 
 

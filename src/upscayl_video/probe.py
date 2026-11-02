@@ -20,7 +20,7 @@ VIDEO_EXTENSIONS = frozenset({
 _HDR_HINT = "Re-run with --tonemap to convert HDR to SDR BT.709."
 
 
-def require_sdr(media, tonemap: bool, hint: str = _HDR_HINT) -> None:
+def require_sdr(media: MediaInfo, tonemap: bool, hint: str = _HDR_HINT) -> None:
     """Refuse HDR input unless the caller asked for a tonemap conversion."""
     if media.hdr and not tonemap:
         raise ValidationError(

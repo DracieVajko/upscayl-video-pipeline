@@ -98,6 +98,7 @@ class FinishOptions:
     keep: bool = False
     force: bool = False
     assume_yes: bool = False
+    dry_run: bool = False
 
 
 def parse_ffmpeg_args(value: str | None) -> tuple[str, ...]:
