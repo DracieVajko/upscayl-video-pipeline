@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .config import Config
@@ -60,6 +60,12 @@ def estimate_disk(
         free_bytes=0,
         fits=False,
     )
+
+
+def with_free_space(estimate: DiskEstimate, free: int) -> DiskEstimate:
+    """Attach the measured free space and derive whether the estimate fits."""
+    free = max(0, int(free))
+    return replace(estimate, free_bytes=free, fits=free >= estimate.total_bytes)
 
 
 def check_estimate(

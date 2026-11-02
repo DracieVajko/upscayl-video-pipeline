@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Sequence
 
 from .config import Config
-from .disk import check_estimate, estimate_disk, free_bytes, sample_frame_bytes
+from .disk import (
+    check_estimate,
+    estimate_disk,
+    free_bytes,
+    sample_frame_bytes,
+    with_free_space,
+)
 from .chunking import concat_segments, plan_chunks
 from .encode import (
     EncodeOptions,
@@ -414,7 +420,7 @@ def run_split(
             duration=processed_duration,
         )
         estimate = estimate_disk(sample_bytes, expected_frames, scale)
-        estimate = dataclasses.replace(estimate, free_bytes=free_bytes(config.work_dir))
+        estimate = with_free_space(estimate, free_bytes(config.work_dir))
         logger.info(
             f"Job {job.job_id}: {format_duration(processed_duration)}, "
             f"{expected_frames} frames, sample {human_bytes(sample_bytes)}, "
@@ -895,9 +901,7 @@ def _auto_chunk_seconds(
         duration=duration,
     )
     estimate = estimate_disk(sample, frames, scale)
-    estimate = dataclasses.replace(
-        estimate, free_bytes=free_bytes(config.work_dir)
-    )
+    estimate = with_free_space(estimate, free_bytes(config.work_dir))
     logger.info(
         "Auto-chunk estimate: "
         f"{format_duration(duration)}, {frames} frames, "

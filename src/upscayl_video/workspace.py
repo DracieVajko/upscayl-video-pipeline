@@ -422,9 +422,16 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
             logger.warn(f"Skipping {job.job_id}: no upscaled frames in {job.upscaled_dir}")
             skipped += 1
             continue
+        if options.dry_run:
+            logger.info(
+                f"Dry run: would assemble {job.job_id} ({count} frames) "
+                f"and publish it to {config.output_dir}"
+            )
+            done += 1
+            continue
         try:
             logger.info(f"Assembling {job.job_id} ({count} frames)")
-            outputs = run_assemble([job], config, encode, logger)
+            outputs = run_assemble([job], config, encode, logger, dry_run=options.dry_run)
             if outputs:
                 logger.info(f"Output: {outputs[0]}")
             done += 1

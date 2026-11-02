@@ -233,7 +233,7 @@ def _report_html(
         f"<style>{_CSS}</style></head><body>",
         f"<h1>Model test — {html.escape(video.name)}</h1>",
         (
-            f'<div class="meta">{media.width}×{media.height} ' + DOT + ' '
+            f'<div class="meta">{media.width}×{media.height} · '
             f"{format_clock(media.duration)} · seed {seed} · "
             f"{len(models)} models · {len(timestamps)} frames</div>"
         ),
