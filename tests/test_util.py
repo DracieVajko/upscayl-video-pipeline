@@ -7,6 +7,7 @@ from upscayl_video.errors import CommandError, ValidationError
 from upscayl_video.util import (
     Logger,
     atomic_write_text,
+    format_clock,
     format_duration,
     human_bytes,
     parse_time,
@@ -33,6 +34,13 @@ class TestTimeParsing(unittest.TestCase):
 class TestFormatting(unittest.TestCase):
     def test_format_duration(self):
         self.assertEqual(format_duration(3723.5), "01:02:03.500")
+
+    def test_format_clock(self):
+        self.assertEqual(format_clock(83.5), "01:23.500")
+        self.assertEqual(format_clock(3723.5), "1:02:03.500")
+
+    def test_format_clock_carries_rounding(self):
+        self.assertEqual(format_clock(59.9996), "01:00.000")
 
     def test_human_bytes(self):
         self.assertEqual(human_bytes(0), "0 B")

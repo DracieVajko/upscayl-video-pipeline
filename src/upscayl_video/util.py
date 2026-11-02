@@ -214,13 +214,13 @@ def format_duration(seconds: float) -> str:
 
 def format_clock(seconds: float) -> str:
     """Format a duration as M:SS.mmm, or H:MM:SS.mmm once hours are present."""
-    seconds = max(0.0, float(seconds))
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    rest = seconds % 60
+    total_ms = int(round(max(0.0, float(seconds)) * 1000))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
     if hours:
-        return f"{hours:d}:{minutes:02d}:{rest:06.3f}"
-    return f"{minutes:02d}:{rest:06.3f}"
+        return f"{hours:d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+    return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
 
 def discard_file(path) -> None:

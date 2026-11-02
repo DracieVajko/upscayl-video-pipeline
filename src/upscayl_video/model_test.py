@@ -229,13 +229,13 @@ def _report_html(
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>Model test ???????? {html.escape(video.name)}</title>",
+        f"<title>Model test — {html.escape(video.name)}</title>",
         f"<style>{_CSS}</style></head><body>",
-        f"<h1>Model test ???????? {html.escape(video.name)}</h1>",
+        f"<h1>Model test — {html.escape(video.name)}</h1>",
         (
-            f'<div class="meta">{media.width}?????{media.height} ???? '
-            f"{format_clock(media.duration)} ???? seed {seed} ???? "
-            f"{len(models)} models ???? {len(timestamps)} frames</div>"
+            f'<div class="meta">{media.width}×{media.height} ' + DOT + ' '
+            f"{format_clock(media.duration)} · seed {seed} · "
+            f"{len(models)} models · {len(timestamps)} frames</div>"
         ),
         (
             '<p class="note">Compare details at 100 % (click an image). '
@@ -245,7 +245,7 @@ def _report_html(
     ]
     for position, timestamp in enumerate(timestamps, 1):
         index = position
-        parts.append(f"<h2>Frame {position} ???????? {format_clock(timestamp)}</h2>")
+        parts.append(f"<h2>Frame {position} — {format_clock(timestamp)}</h2>")
         parts.append('<div class="grid">')
         parts.append(_card(test_dir, "Original", originals.get(index), original=True))
         for name in models:
@@ -318,7 +318,7 @@ def run_model_test(
 
     total = len(models) * len(timestamps)
     logger.info(f"Video: {video}")
-    logger.info(f"Duration: {format_clock(media.duration)} ???? {media.width}?????{media.height}")
+    logger.info(f"Duration: {format_clock(media.duration)} · {media.width}×{media.height}")
     logger.info("Frames: " + ", ".join(format_clock(value) for value in timestamps))
     logger.info(f"Seed: {seed}")
     logger.info(f"Models ({len(models)}): " + ", ".join(name for name, _ in models))
