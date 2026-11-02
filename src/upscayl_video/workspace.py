@@ -30,11 +30,39 @@ _BLOCKED_FFMPEG_ARGS = {
     "-filter_complex",
     "-lavfi",
     "-vf",
-    "-filter:v",
+    "-af",
+    "-filter",
+    "-ss",
+    "-t",
+    "-to",
+    "-c",
+    "-codec",
     "-y",
     "-n",
     "-f",
+    "-vn",
+    "-an",
+    "-sn",
+    "-dn",
+    "-map_metadata",
+    "-map_chapters",
+    "-frames",
+    "-r",
+    "-s",
+    "-aspect",
+    "-pix_fmt",
 }
+
+
+def _blocked_ffmpeg_token(token: str) -> bool:
+    """True when the token names a structural flag the pipeline owns.
+
+    Matches the base option name so stream-suffixed spellings such as
+    ``-filter:v:0`` or ``-c:v`` cannot slip past an exact-string check.
+    """
+    if not token.startswith("-"):
+        return False
+    return token.split(":", 1)[0] in _BLOCKED_FFMPEG_ARGS
 
 
 @dataclass(frozen=True)
@@ -79,7 +107,7 @@ def parse_ffmpeg_args(value: str | None) -> tuple[str, ...]:
         tokens = shlex.split(str(value))
     except ValueError as exc:
         raise ValidationError(f"Could not parse --ffmpeg-args: {exc}") from exc
-    blocked = [token for token in tokens if token in _BLOCKED_FFMPEG_ARGS]
+    blocked = [token for token in tokens if _blocked_ffmpeg_token(token)]
     if blocked:
         raise ValidationError(
             "Blocked FFmpeg arguments: " + ", ".join(blocked),

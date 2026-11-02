@@ -86,6 +86,24 @@ class FfmpegArgsTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 parse_ffmpeg_args(value)
 
+    def test_rejects_stream_suffixed_structural_flags(self) -> None:
+        for value in (
+            "-filter:v:0 scale=2",
+            "-c:v libx265",
+            "-af volume=0.5",
+            "-ss 10",
+            "-pix_fmt yuv420p10le",
+            "-map_metadata 0",
+        ):
+            with self.assertRaises(ValidationError):
+                parse_ffmpeg_args(value)
+
+    def test_accepts_non_structural_flags(self) -> None:
+        self.assertEqual(
+            parse_ffmpeg_args("-movflags +faststart -b:v 1500k"),
+            ("-movflags", "+faststart", "-b:v", "1500k"),
+        )
+
     def test_empty_value(self) -> None:
         self.assertEqual(parse_ffmpeg_args(None), ())
         self.assertEqual(parse_ffmpeg_args("  "), ())

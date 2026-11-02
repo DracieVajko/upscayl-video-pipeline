@@ -4926,7 +4926,7 @@ function Get-CommandOptionsSpec {
             & $add 'subs' 'value' $null @('auto', 'copy', 'convert', 'none')
             & $add '10bit' 'flag' 'ten_bit'
             & $add 'keep' 'flag'
-            & "$add 'resume' 'flag'
+            & $add 'resume' 'flag'
             & $add 'ffmpeg-args' 'value' $null $null $false
         }
         'assemble' {
@@ -5086,6 +5086,33 @@ function Get-OptionValue {
     param($Options, [string]$Key, $Default = $null)
     if ($Options.ContainsKey($Key)) { return $Options[$Key] }
     return $Default
+}
+
+$script:BlockedFfmpegFlags = @(
+    '-i', '-map', '-filter_complex', '-lavfi', '-vf', '-af', '-filter',
+    '-ss', '-t', '-to', '-c', '-codec', '-y', '-n', '-f', '-vn', '-an',
+    '-sn', '-dn', '-map_metadata', '-map_chapters', '-frames', '-r', '-s',
+    '-aspect', '-pix_fmt'
+)
+
+function Get-ValidatedFfmpegArgs {
+    param($Value)
+    $text = [string]$Value
+    if (-not $text.Trim()) { return @() }
+    $tokens = @($text -split '\s+' | Where-Object { $_ })
+    $blocked = @()
+    foreach ($token in $tokens) {
+        if (-not $token.StartsWith('-')) { continue }
+        $base = ($token -split ':', 2)[0]
+        if ($script:BlockedFfmpegFlags -contains $base) { $blocked += $token }
+    }
+    if ($blocked.Count -gt 0) {
+        throw [PipelineException]::new(
+            'Blocked FFmpeg arguments: ' + ($blocked -join ', '),
+            'Input, mapping, filters, and overwrite flags are controlled by the pipeline.',
+            4)
+    }
+    return $tokens
 }
 
 function Invoke-Main {
@@ -5272,7 +5299,7 @@ function Invoke-Main {
             subs = (Get-OptionValue $opts 'subs' $null)
             ten_bit = $opts.ContainsKey('ten_bit')
             keep = $opts.ContainsKey('keep')
-            ffmpeg_args = if ($opts.ContainsKey('ffmpeg_args')) { @($opts['ffmpeg_args']) } else { @() }
+            ffmpeg_args = if ($opts.ContainsKey('ffmpeg_args')) { @(Get-ValidatedFfmpegArgs $opts['ffmpeg_args']) } else { @() }
         }
         $result = Invoke-Finish -Jobs $jobs -Config $config -Options $options -Logger $logger -DryRun $dryRun
         if ($result -eq 0 -and -not $dryRun) {
