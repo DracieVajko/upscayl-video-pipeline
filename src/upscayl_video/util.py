@@ -223,6 +223,16 @@ def format_clock(seconds: float) -> str:
     return f"{minutes:02d}:{rest:06.3f}"
 
 
+def discard_file(path) -> None:
+    """Delete a best-effort temporary file, ignoring filesystem errors."""
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def sanitize_job_id(stem: str) -> str:
     """Create a readable, cross-platform job folder name from a stem."""
 

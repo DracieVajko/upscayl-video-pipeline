@@ -223,6 +223,22 @@ class Job:
         else:
             self.data[key] = str(value)
 
+    def record_error(self, exc: BaseException) -> None:
+        """Persist a bounded error message, tolerating an unwritable job folder."""
+        self.data["last_error"] = str(exc)[:500]
+        try:
+            self.save()
+        except OSError:
+            pass
+
+    def clear_error(self) -> None:
+        """Clear the recorded error and save, tolerating an unwritable job folder."""
+        self.data["last_error"] = ""
+        try:
+            self.save()
+        except OSError:
+            pass
+
     def mark_done(self, stage: str) -> None:
         marker = self.path / f".done_{stage}"
         marker.parent.mkdir(parents=True, exist_ok=True)

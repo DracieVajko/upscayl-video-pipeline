@@ -65,6 +65,7 @@ from .upscayl import (
 )
 from .util import (
     Logger,
+    discard_file,
     ensure_within,
     format_duration,
     human_bytes,
@@ -448,16 +449,11 @@ def run_split(
                 logger=logger,
             )
         except PipelineError as exc:
-            job.set("last_error", str(exc)[:500])
-            try:
-                job.save()
-            except OSError:
-                pass
+            job.record_error(exc)
             raise
         job.set("frame_count", count)
         job.set("upscaled_count", 0)
-        job.set("last_error", "")
-        job.save()
+        job.clear_error()
         job.mark_done("split")
         jobs.append(job)
     return jobs
@@ -559,11 +555,7 @@ def run_upscale(
                 assume_yes=options.assume_yes,
             )
         except PipelineError as exc:
-            job.set("last_error", str(exc)[:500])
-            try:
-                job.save()
-            except OSError:
-                pass
+            job.record_error(exc)
             raise
         job.set("model", options.model)
         job.set("scale", options.scale)
@@ -571,8 +563,7 @@ def run_upscale(
         job.set("batch_size", batch_size)
         job.set("upscaled_count", count)
         job.set("upscaled_dir", str(output_dir))
-        job.set("last_error", "")
-        job.save()
+        job.clear_error()
         job.mark_done("upscale")
         results.append(job)
     return results
@@ -845,23 +836,14 @@ def _run_chunked(
         job.set("encoder", options.encode.encoder)
         job.set("audio", audio_mode)
         job.set("subs", subs_mode)
-        job.set("last_error", "")
-        job.save()
+        job.clear_error()
         job.mark_done("assemble")
         if options.cleanup:
             final_output = _publish_and_purge(job, final_output, config, logger)
         return RunResult(source, job, final_output, None)
     except PipelineError as exc:
-        if temp_output is not None and temp_output.exists():
-            try:
-                temp_output.unlink()
-            except OSError:
-                pass
-        job.set("last_error", str(exc)[:500])
-        try:
-            job.save()
-        except OSError:
-            pass
+        discard_file(temp_output)
+        job.record_error(exc)
         return RunResult(source, job, None, str(exc))
 
 
@@ -1385,18 +1367,13 @@ def _assemble_chunked_job(
         job.set("encoder", options.encoder)
         job.set("audio", audio_mode)
         job.set("subs", subs_mode)
-        job.set("last_error", "")
-        job.save()
+        job.clear_error()
         job.mark_done("assemble")
         if options.cleanup:
             final_output = _publish_and_purge(job, final_output, config, logger)
         return final_output
     except Exception:
-        if temp_output.exists():
-            try:
-                temp_output.unlink()
-            except OSError:
-                pass
+        discard_file(temp_output)
         raise
 
 
@@ -1621,23 +1598,14 @@ def run_assemble(
             job.set("subs", subs_mode)
             job.set("ten_bit", options.ten_bit)
             job.set("target_height", job_options.target_height or "")
-            job.set("last_error", "")
-            job.save()
+            job.clear_error()
             job.mark_done("assemble")
             if options.cleanup:
                 final_output = _publish_and_purge(job, final_output, config, logger)
             outputs.append(final_output)
         except PipelineError as exc:
-            if temp_output is not None and temp_output.exists():
-                try:
-                    temp_output.unlink()
-                except OSError:
-                    pass
-            job.set("last_error", str(exc)[:500])
-            try:
-                job.save()
-            except OSError:
-                pass
+            discard_file(temp_output)
+            job.record_error(exc)
             raise
     return outputs
 
