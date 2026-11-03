@@ -84,7 +84,7 @@ from .util import (
 @dataclass(frozen=True)
 class UpscaleOptions:
     model: str
-    scale: int = 2
+    scale: int | None = None
     gpu: int = 0
     tile: str = "auto"
     batch_size: int = 0
@@ -514,7 +514,7 @@ def run_upscale(
         ) if output_dir.is_dir() else False
         if existing and (
             (job.get("model") and job.get("model") != options.model)
-            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+            or (job.get_int("scale") and job.get_int("scale") != scale)
         ) and not options.force:
             raise ValidationError(
                 "Existing upscaled frames use a different model or scale.",
@@ -522,19 +522,22 @@ def run_upscale(
             )
         if existing and options.force and (
             (job.get("model") and job.get("model") != options.model)
-            or (job.get_int("scale") and job.get_int("scale") != options.scale)
+            or (job.get_int("scale") and job.get_int("scale") != scale)
         ):
             if output_dir.exists():
                 shutil.rmtree(output_dir)
             job.clear_stage("upscale")
             job.set("upscaled_count", 0)
+        # A split may have resolved --target-height into a stored scale; honour
+        # it unless the caller pinned --scale explicitly.
+        scale = options.scale or job.get_int("scale") or config.default_scale
         width = job.get_int("width", 1920)
         height = job.get_int("height", 1080)
         batch_size = resolve_batch_size(options.batch_size, width, height)
         if dry_run:
             logger.info(
                 f"Would upscale {job.job_id}: {frame_count} frames with "
-                f"{options.model} at {options.scale}x, tile {tile}, batch {batch_size}"
+                f"{options.model} at {scale}x, tile {tile}, batch {batch_size}"
             )
             results.append(job)
             continue
@@ -544,7 +547,7 @@ def run_upscale(
                 job,
                 paths,
                 model=options.model,
-                scale=options.scale,
+                scale=scale,
                 output_dir=output_dir,
                 tile=tile,
                 batch_size=batch_size,
@@ -560,7 +563,7 @@ def run_upscale(
             job.record_error(exc)
             raise
         job.set("model", options.model)
-        job.set("scale", options.scale)
+        job.set("scale", scale)
         job.set("tile", tile)
         job.set("batch_size", batch_size)
         job.set("upscaled_count", count)

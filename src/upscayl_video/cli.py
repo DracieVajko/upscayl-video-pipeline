@@ -423,7 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             jobs = resolve_jobs(args.jobs, config, all_jobs=args.all)
             options = UpscaleOptions(
                 model=args.model or config.default_model,
-                scale=args.scale or config.default_scale,
+                scale=args.scale,
                 gpu=args.gpu if args.gpu is not None else config.gpu,
                 tile=args.tile or config.tile,
                 batch_size=(
@@ -473,7 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             upscale = UpscaleOptions(
                 model=args.model or config.default_model,
-                scale=args.scale or config.default_scale,
+                scale=args.scale,
                 gpu=args.gpu if args.gpu is not None else config.gpu,
                 tile=args.tile or config.tile,
                 batch_size=(
