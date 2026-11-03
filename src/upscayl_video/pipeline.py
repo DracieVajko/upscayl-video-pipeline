@@ -509,6 +509,7 @@ def run_upscale(
             if options.upscaled_dir is not None
             else job.upscaled_dir
         )
+        scale = options.scale or job.get_int("scale") or config.default_scale
         existing = any(
             path.is_file() for path in output_dir.glob("*")
         ) if output_dir.is_dir() else False
@@ -528,9 +529,6 @@ def run_upscale(
                 shutil.rmtree(output_dir)
             job.clear_stage("upscale")
             job.set("upscaled_count", 0)
-        # A split may have resolved --target-height into a stored scale; honour
-        # it unless the caller pinned --scale explicitly.
-        scale = options.scale or job.get_int("scale") or config.default_scale
         width = job.get_int("width", 1920)
         height = job.get_int("height", 1080)
         batch_size = resolve_batch_size(options.batch_size, width, height)
@@ -780,17 +778,20 @@ def _run_chunked(
             split_command[0] = str(config.ffmpeg)
             run_command(split_command, logger=logger)
             validate_frame_set(frames_dir, expected=chunk.frame_count)
+            chunk_scale = (
+                job.get_int("scale") or options.upscale.scale or config.default_scale
+            )
             upscale_frames(
                 job,
                 paths,
                 model=options.upscale.model,
-                scale=options.upscale.scale,
+                scale=chunk_scale,
                 output_dir=upscaled_dir,
                 tile=tile,
                 batch_size=resolve_batch_size(
                     options.upscale.batch_size,
-                    job.get_int("width", 1920) * (job.get_int("scale") or options.upscale.scale),
-                    job.get_int("height", 1080) * (job.get_int("scale") or options.upscale.scale),
+                    job.get_int("width", 1920) * chunk_scale,
+                    job.get_int("height", 1080) * chunk_scale,
                 ),
                 gpu=options.upscale.gpu,
                 icd=icd,
@@ -1013,7 +1014,7 @@ def run_all(
             duration = float(job.get("duration") or 0.0)
             fps = float(job.get("fps_decimal") or 0.0)
             frames = int(round(duration * fps))
-            scale = job.get_int("scale") or options.upscale.scale
+            scale = job.get_int("scale") or options.upscale.scale or config.default_scale
             chunk_value = str(options.chunk_seconds).strip().lower()
             if chunk_value not in {"0", "auto"}:
                 try:
