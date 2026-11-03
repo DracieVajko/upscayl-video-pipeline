@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import Config
 from .errors import CommandError, DiskSpaceError
-from .frames import build_split_command
+from .frames import build_split_command, is_nonempty_file
 from .job import Job
 from .probe import MediaInfo
 from .util import Logger, human_bytes, run_command
@@ -131,8 +131,8 @@ def sample_frame_bytes(
         command[0] = str(config.ffmpeg)
         try:
             run_command(command, logger=logger)
-            files = [path for path in temp_dir.iterdir() if path.is_file()]
-            if files and files[0].stat().st_size > 0:
+            files = [path for path in temp_dir.iterdir() if is_nonempty_file(path)]
+            if files:
                 return int(files[0].stat().st_size)
             reason = "sample command produced no frame"
         except CommandError as exc:

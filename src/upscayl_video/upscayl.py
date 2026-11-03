@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import Config
 from .errors import CommandError, DependencyError, UpscaleError, ValidationError
-from .frames import scan_frames
+from .frames import is_nonempty_file, scan_frames
 from .job import Job
 from .progress import Progress
 from .util import Logger, run_command
@@ -317,7 +317,7 @@ def smoke_test(
         except Exception as exc:
             return False, str(exc)[:500]
         output = target / "test.png"
-        if not output.is_file() or output.stat().st_size <= 0:
+        if not is_nonempty_file(output):
             return False, "Upscayl produced no output file"
     return True, "OK"
 
@@ -330,12 +330,12 @@ def missing_indices(source_dir: Path, output_dir: Path, total: int) -> list[int]
         src = [
             path
             for path in source.get(index, [])
-            if path.is_file() and path.stat().st_size > 0
+            if is_nonempty_file(path)
         ]
         dst = [
             path
             for path in output.get(index, [])
-            if path.is_file() and path.stat().st_size > 0
+            if is_nonempty_file(path)
         ]
         if src and not dst:
             missing.append(index)
@@ -344,14 +344,14 @@ def missing_indices(source_dir: Path, output_dir: Path, total: int) -> list[int]
 
 def _source_for_index(source_dir: Path, index: int) -> Path | None:
     for path in scan_frames(source_dir).get(index, []):
-        if path.is_file() and path.stat().st_size > 0:
+        if is_nonempty_file(path):
             return path
     return None
 
 
 def _output_for_stem(output_dir: Path, stem: str) -> Path | None:
     for path in output_dir.iterdir():
-        if path.is_file() and path.stem == stem and path.stat().st_size > 0:
+        if path.stem == stem and is_nonempty_file(path):
             return path
     return None
 
@@ -512,7 +512,7 @@ def upscale_frames(
             index
             for index in range(1, total + 1)
             if any(
-                path.is_file() and path.stat().st_size > 0
+                is_nonempty_file(path)
                 for path in scan_frames(output_dir).get(index, [])
             )
         ]
