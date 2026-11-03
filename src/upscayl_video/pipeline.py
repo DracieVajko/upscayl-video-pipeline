@@ -47,6 +47,7 @@ from .frames import (
     count_contiguous_frames,
     extract_frames,
     frame_pattern,
+    is_nonempty_file,
     scan_frames,
     validate_frame_set,
 )
@@ -218,7 +219,7 @@ def _parse_fps_override(value: str) -> tuple[int, int]:
 
 def _has_frames(job: Job) -> bool:
     return any(
-        path.is_file() and path.stat().st_size > 0
+        is_nonempty_file(path)
         for paths in scan_frames(job.frames_dir, recursive=False).values()
         for path in paths
     )
@@ -709,7 +710,7 @@ def _run_chunked(
             segment = job.chunks_dir / f"chunk_{chunk.index:04d}.{extension}"
             marker = job.path / f".done_chunk_{chunk.index:04d}"
             segments.append(segment)
-            if marker.is_file() and segment.is_file() and segment.stat().st_size > 0:
+            if marker.is_file() and is_nonempty_file(segment):
                 progress.update(chunk.frame_count)
                 continue
             chunk_dir = job.chunks_dir / f"chunk_{chunk.index:04d}"
@@ -1258,7 +1259,7 @@ def _assemble_chunked_job(
         segment = None
         for suffix in (".ts", ".mov"):
             candidate = job.chunks_dir / f"chunk_{chunk.index:04d}{suffix}"
-            if candidate.is_file() and candidate.stat().st_size > 0:
+            if is_nonempty_file(candidate):
                 segment = candidate
                 break
         marker = job.path / f".done_chunk_{chunk.index:04d}"
@@ -1459,7 +1460,7 @@ def run_assemble(
                 )
             raw_frames = scan_frames(upscaled_dir, recursive=True)
             if not any(
-                path.is_file() and path.stat().st_size > 0
+                is_nonempty_file(path)
                 for paths in raw_frames.values()
                 for path in paths
             ):
@@ -1645,7 +1646,7 @@ def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None
             1
             for paths in scan_frames(job.upscaled_dir, recursive=True).values()
             for path in paths
-            if path.is_file() and path.stat().st_size > 0
+            if is_nonempty_file(path)
         )
         outputs = sorted(
             path

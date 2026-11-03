@@ -112,6 +112,14 @@ def scan_frames(directory: Path, *, recursive: bool = False) -> dict[int, list[P
     return found
 
 
+def is_nonempty_file(path: Path) -> bool:
+    """True when the path is a regular file with real content."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def count_contiguous_frames(directory: Path, extension: str) -> int:
     frames = scan_frames(directory, recursive=False)
     wanted = extension.lower().lstrip(".")
@@ -121,8 +129,7 @@ def count_contiguous_frames(directory: Path, extension: str) -> int:
         paths = [
             path
             for path in frames.get(index, [])
-            if path.is_file()
-            and path.stat().st_size > 0
+            if is_nonempty_file(path)
             and path.suffix.lower().lstrip(".") == wanted
         ]
         if not paths:
@@ -142,7 +149,7 @@ def validate_frame_set(
     selected: dict[int, Path] = {}
 
     for index, paths in raw.items():
-        valid = [path for path in paths if path.is_file() and path.stat().st_size > 0]
+        valid = [path for path in paths if is_nonempty_file(path)]
         if not valid:
             continue
         if len(valid) > 1:
@@ -429,7 +436,7 @@ def extract_frames(
         1
         for paths in frames.values()
         for path in paths
-        if path.is_file() and path.stat().st_size > 0
+        if is_nonempty_file(path)
     )
     existing = count_contiguous_frames(job.frames_dir, "jpg" if fmt == "jpg" else "png")
     if total_files > existing:
@@ -448,57 +455,39 @@ def extract_frames(
     first_frame = existing + 1
     adjusted_start = start + (existing / fps if existing else 0.0)
     remaining = expected - existing
-    command = build_split_command(
-        job.source_path,
-        job,
-        media,
-        start=adjusted_start,
-        duration=remaining / fps,
-        first_frame=first_frame,
-        fmt=fmt,
-        jpeg_quality=jpeg_quality,
-        png_compression=png_compression,
-        denoise=denoise,
-        tonemap=tonemap,
-        decode=chosen,
-        frame_limit=remaining,
-    )
-    command[0] = str(config.ffmpeg)
+    def build(decode_mode: str) -> list[str]:
+        command = build_split_command(
+            job.source_path,
+            job,
+            media,
+            start=adjusted_start,
+            duration=remaining / fps,
+            first_frame=first_frame,
+            fmt=fmt,
+            jpeg_quality=jpeg_quality,
+            png_compression=png_compression,
+            denoise=denoise,
+            tonemap=tonemap,
+            decode=decode_mode,
+            frame_limit=remaining,
+        )
+        command[0] = str(config.ffmpeg)
+        return command
+
     if dry_run:
-        logger.info(" ".join(command))
+        logger.info(" ".join(build(chosen)))
         return expected
 
     job.frames_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        run_command(command, logger=logger)
-    except CommandError as exc:
-        if chosen == "gpu":
-            logger.warn("GPU frame extraction failed; retrying with CPU")
-            job.set("decode", "cpu")
-            command = build_split_command(
-                job.source_path,
-                job,
-                media,
-                start=adjusted_start,
-                duration=remaining / fps,
-                first_frame=first_frame,
-                fmt=fmt,
-                jpeg_quality=jpeg_quality,
-                png_compression=png_compression,
-                denoise=denoise,
-                tonemap=tonemap,
-                decode="cpu",
-                frame_limit=remaining,
-            )
-            command[0] = str(config.ffmpeg)
-            try:
-                run_command(command, logger=logger)
-            except CommandError as retry_exc:
-                raise EncodeError(
-                    f"Frame extraction failed: {job.source_path}",
-                    hint=retry_exc.stderr_tail or str(retry_exc),
-                ) from retry_exc
-        else:
+    for candidate in (("gpu", "cpu") if chosen == "gpu" else (chosen,)):
+        try:
+            run_command(build(candidate), logger=logger)
+            break
+        except CommandError as exc:
+            if candidate == "gpu":
+                logger.warn("GPU frame extraction failed; retrying with CPU")
+                job.set("decode", "cpu")
+                continue
             raise EncodeError(
                 f"Frame extraction failed: {job.source_path}",
                 hint=exc.stderr_tail or str(exc),

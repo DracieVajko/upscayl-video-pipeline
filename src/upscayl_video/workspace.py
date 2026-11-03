@@ -14,7 +14,7 @@ from typing import Sequence
 from .config import Config
 from .encode import EncodeOptions
 from .errors import PipelineError, UsageError, ValidationError
-from .frames import scan_frames
+from .frames import is_nonempty_file, scan_frames
 from .job import Job
 from .pipeline import SplitOptions, find_jobs, run_assemble, run_split
 from .probe import (
@@ -333,7 +333,7 @@ def _upscaled_count(job: Job) -> int:
     return sum(
         len(paths)
         for paths in scan_frames(job.upscaled_dir, recursive=True).values()
-        if any(path.is_file() and path.stat().st_size > 0 for path in paths)
+        if any(is_nonempty_file(path) for path in paths)
     )
 
 
