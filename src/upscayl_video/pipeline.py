@@ -245,6 +245,8 @@ def _settings_differences(job: Job, media: MediaInfo, start: float, end: float |
         # Match what run_split stores: range_end is empty when the user did
         # not pass --end, even though the effective end is the source duration.
         "range_end": "" if options.end is None else f"{end:.3f}",
+        "model": options.model,
+        "decode": options.decode,
         "denoise": options.denoise,
         "tonemap": "1" if options.tonemap else "0",
         "png_compression": str(options.png_compression),
@@ -1320,16 +1322,8 @@ def _assemble_chunked_job(
     expected_width = first_info.width
     expected_height = first_info.height
 
-    audio_mode = options.audio or (
-        config.default_audio
-        if config.default_audio != "auto"
-        else preset.default_audio
-    )
-    subs_mode = options.subs or (
-        config.default_subs
-        if config.default_subs != "auto"
-        else preset.default_subs
-    )
+    audio_mode = _resolve_audio_mode(config, preset, options.audio)
+    subs_mode = _resolve_subs_mode(config, preset, options.subs)
     audio_plan = _trim_safe_audio_plan(
         media,
         preset,
@@ -1513,16 +1507,8 @@ def run_assemble(
                 job_options.allow_huge,
             )
 
-            audio_mode = options.audio or (
-                config.default_audio
-                if config.default_audio != "auto"
-                else preset.default_audio
-            )
-            subs_mode = options.subs or (
-                config.default_subs
-                if config.default_subs != "auto"
-                else preset.default_subs
-            )
+            audio_mode = _resolve_audio_mode(config, preset, options.audio)
+            subs_mode = _resolve_subs_mode(config, preset, options.subs)
             audio_plan = _trim_safe_audio_plan(
                 media,
                 preset,
