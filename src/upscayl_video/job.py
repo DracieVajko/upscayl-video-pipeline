@@ -252,6 +252,17 @@ class Job:
         if marker.exists():
             marker.unlink()
 
+    def clear_chunk_markers(self) -> None:
+        """Drop per-chunk completion markers once the job is fully assembled."""
+        for marker in self.path.glob(".done_chunk_*"):
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+    def is_chunked(self) -> bool:
+        return any(self.path.glob(".done_chunk_*"))
+
     def update_from_media(self, media: MediaInfo) -> None:
         self.set("source", str(Path(media.source).resolve()))
         self.set("source_size", media.source_size)

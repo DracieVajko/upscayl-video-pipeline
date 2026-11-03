@@ -1417,6 +1417,7 @@ def _assemble_chunked_job(
         job.set("audio", audio_mode)
         job.set("subs", subs_mode)
         job.clear_error()
+        job.clear_chunk_markers()
         job.mark_done("assemble")
         if options.cleanup:
             final_output = _publish_and_purge(job, final_output, config, logger)
