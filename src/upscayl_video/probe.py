@@ -104,8 +104,8 @@ def normalize_fps(avg: str | None, real: str | None) -> tuple[int, int]:
     return (30, 1)
 
 
-def is_hdr(color_trc: str | None, pix_fmt: str) -> bool:
-    del pix_fmt  # 10-bit SDR is not HDR; only the transfer function decides.
+def is_hdr(color_trc: str | None) -> bool:
+    # 10-bit SDR is not HDR; only the transfer function decides.
     return (color_trc or "").strip().lower() in {"smpte2084", "arib-std-b67"}
 
 
@@ -225,7 +225,7 @@ def media_info_from_json(source: Path, data: Mapping[str, Any]) -> MediaInfo:
         colorspace=_clean(video.get("color_space")),
         color_range=_clean(video.get("color_range")),
         rotation=_rotation(video),
-        hdr=is_hdr(color_trc, pix_fmt),
+        hdr=is_hdr(color_trc),
         source_size=source_path.stat().st_size if exists else 0,
         source_mtime=int(source_path.stat().st_mtime) if exists else 0,
         nb_frames=packet_count or None,

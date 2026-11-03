@@ -24,13 +24,13 @@ class TestFps(unittest.TestCase):
 
 class TestHdr(unittest.TestCase):
     def test_pq(self):
-        self.assertTrue(is_hdr("smpte2084", "yuv420p10le"))
+        self.assertTrue(is_hdr("smpte2084"))
 
     def test_hlg(self):
-        self.assertTrue(is_hdr("arib-std-b67", "yuv420p10le"))
+        self.assertTrue(is_hdr("arib-std-b67"))
 
     def test_sdr(self):
-        self.assertFalse(is_hdr("bt709", "yuv420p"))
+        self.assertFalse(is_hdr("bt709"))
 
 
 class TestMediaInfo(unittest.TestCase):

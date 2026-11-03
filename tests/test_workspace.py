@@ -1,4 +1,4 @@
-﻿"""Tests for the two-phase workspace flow."""
+"""Tests for the two-phase workspace flow."""
 
 from __future__ import annotations
 
