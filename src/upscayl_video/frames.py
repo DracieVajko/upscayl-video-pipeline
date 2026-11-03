@@ -416,8 +416,7 @@ def extract_frames(
     expected = int(round(total_duration * fps))
     if expected <= 0:
         return 0
-    if media.hdr and not tonemap:
-        require_sdr(media, tonemap)
+    require_sdr(media, tonemap)
     if tonemap and not media.hdr:
         logger.warn("--tonemap was requested for a non-HDR source; applying the SDR conversion anyway")
 

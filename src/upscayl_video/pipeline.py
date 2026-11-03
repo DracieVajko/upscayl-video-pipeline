@@ -374,8 +374,7 @@ def run_split(
                 options, target_height=options.target_height + 1
             )
         scale, target_height = _resolve_scale(media, options, job, config)
-        if media.hdr and not options.tonemap:
-            require_sdr(media, options.tonemap)
+        require_sdr(media, options.tonemap)
         if not media.hdr and any(bit in media.pix_fmt.lower() for bit in ("10", "12", "16")):
             logger.warn(
                 "10-bit SDR source: frames will be converted to 8-bit RGB for Upscayl."
@@ -627,8 +626,7 @@ def _prepare_chunk_job(
     duration = end - start
     job = Job.create_or_open(config.work_dir, source, logger)
     logger.set_log_file(job.logs_dir / "run.log")
-    if media.hdr and not options.split.tonemap:
-        require_sdr(media, options.split.tonemap)
+    require_sdr(media, options.split.tonemap)
     scale, target = _resolve_scale(media, options.split, job, config)
     fps = media.fps_decimal or 30.0
     total_frames = int(round(duration * fps))
@@ -898,6 +896,9 @@ def _run_chunked(
         temp_output = None
         if not options.encode.keep_chunks:
             shutil.rmtree(job.chunks_dir, ignore_errors=True)
+            # Markers are the chunk resume record; drop them only once the
+            # segments they certify are gone.
+            job.clear_chunk_markers()
         job.set("preset", preset.name)
         job.set("encoder", options.encode.encoder)
         job.set("audio", audio_mode)
@@ -1412,12 +1413,12 @@ def _assemble_chunked_job(
         os.replace(temp_output, final_output)
         if not options.keep_chunks:
             shutil.rmtree(job.chunks_dir, ignore_errors=True)
+            job.clear_chunk_markers()
         job.set("preset", preset.name)
         job.set("encoder", options.encoder)
         job.set("audio", audio_mode)
         job.set("subs", subs_mode)
         job.clear_error()
-        job.clear_chunk_markers()
         job.mark_done("assemble")
         if options.cleanup:
             final_output = _publish_and_purge(job, final_output, config, logger)

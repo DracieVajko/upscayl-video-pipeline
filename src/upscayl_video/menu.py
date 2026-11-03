@@ -33,11 +33,25 @@ def _ask(label: str, default: str = "") -> str:
     return value or default
 
 
+def _ask_scale(config: Config) -> int | None:
+    """Prompt for an Upscayl scale and enforce the 2/3/4 domain."""
+    text = _ask("Scale 2/3/4", str(config.default_scale))
+    try:
+        scale = int(text)
+    except ValueError:
+        print("Scale must be 2, 3, or 4.")
+        return None
+    if scale not in {2, 3, 4}:
+        print("Scale must be 2, 3, or 4.")
+        return None
+    return scale
+
+
 def _catch(logger: Logger, action) -> None:
     try:
         action()
     except PipelineError as exc:
-        print(str(exc))
+        logger.error(str(exc))
 
 
 _MODEL_HINTS = {
@@ -229,14 +243,8 @@ def run_menu(config: Config | None, logger: Logger) -> int:
                 if fmt not in {"png", "jpg"}:
                     print("Frame format must be png or jpg.")
                     return
-                scale_text = _ask("Scale 2/3/4", str(config.default_scale))
-                try:
-                    scale = int(scale_text)
-                except ValueError:
-                    print("Scale must be 2, 3, or 4.")
-                    return
-                if scale not in {2, 3, 4}:
-                    print("Scale must be 2, 3, or 4.")
+                scale = _ask_scale(config)
+                if scale is None:
                     return
                 options = SplitOptions(
                     fps=None, start=None, end=None, format=fmt,
@@ -255,11 +263,8 @@ def run_menu(config: Config | None, logger: Logger) -> int:
                 if not jobs:
                     return
                 model, model_dir = _select_model(config, logger)
-                scale_text = _ask("Scale 2/3/4", str(config.default_scale))
-                try:
-                    scale = int(scale_text)
-                except ValueError:
-                    print("Scale must be 2, 3, or 4.")
+                scale = _ask_scale(config)
+                if scale is None:
                     return
                 print(
                     "Note: upscale writes frames only; audio and subtitles "
