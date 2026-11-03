@@ -336,7 +336,7 @@ def run_split(
         processed_duration = end - start
 
         job = Job.create_or_open(config.work_dir, source, logger, create=not dry_run)
-        if any(job.path.glob(".done_chunk_*")):
+        if job.is_chunked():
             raise ValidationError(
                 f"Job is chunked: {job.job_id}",
                 hint="Resume it with the run command, not split.",
@@ -486,7 +486,7 @@ def run_upscale(
     icd = resolve_icd(effective_config, options.icd)
     results: list[Job] = []
     for job in jobs:
-        if any(job.path.glob(".done_chunk_*")):
+        if job.is_chunked():
             raise ValidationError(
                 f"Job is chunked: {job.job_id}",
                 hint="Resume it with the run command.",
@@ -939,7 +939,7 @@ def _auto_chunk_seconds(
         return 0
 
     job = Job.create_or_open(config.work_dir, source, logger, create=False)
-    if any(job.path.glob(".done_chunk_*")):
+    if job.is_chunked():
         return job.get_int("chunk_seconds") or _AUTO_CHUNK_SECONDS
     if _has_frames(job):
         # A non-chunked split already exists; do not silently re-chunk it.
@@ -1461,7 +1461,7 @@ def run_assemble(
                     hint="Use --force only if the existing upscaled frames still match the source.",
                 )
 
-            if any(job.path.glob(".done_chunk_*")):
+            if job.is_chunked():
                 outputs.append(
                     _assemble_chunked_job(
                         job,
@@ -1668,7 +1668,7 @@ def run_status(config: Config, logger: Logger, *, verbose: bool = False) -> None
             stage = "done"
         elif job.get("last_error"):
             stage = "failed"
-        elif any(job.path.glob(".done_chunk_*")):
+        elif job.is_chunked():
             stage = "chunk"
         elif upscaled:
             stage = "assemble"

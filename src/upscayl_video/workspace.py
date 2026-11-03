@@ -341,7 +341,7 @@ def _upscaled_count(job: Job) -> int:
         for paths in scan_frames(job.upscaled_dir, recursive=True).values()
         if any(is_nonempty_file(path) for path in paths)
     )
-    if distinct == 0 and any(job.path.glob(".done_chunk_*")):
+    if distinct == 0 and job.is_chunked():
         return job.get_int("frame_count") or 0
     return distinct
 
