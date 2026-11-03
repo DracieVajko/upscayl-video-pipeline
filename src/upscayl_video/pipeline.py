@@ -644,6 +644,46 @@ def _prepare_chunk_job(
     return job, media, start, end, duration
 
 
+def _resolve_audio_mode(config: Config, preset, requested: str | None) -> str:
+    return requested or (
+        config.default_audio if config.default_audio != "auto" else preset.default_audio
+    )
+
+
+def _resolve_subs_mode(config: Config, preset, requested: str | None) -> str:
+    return requested or (
+        config.default_subs if config.default_subs != "auto" else preset.default_subs
+    )
+
+
+def _trim_safe_audio_plan(
+    media: MediaInfo,
+    preset,
+    mode: str,
+    bitrate: int,
+    all_audio: bool,
+    range_start: float,
+    logger: Logger,
+):
+    """Build the audio plan, downgrading copied streams when a trim needs AAC."""
+    plan = plan_audio(media, preset, mode, bitrate, all_audio)
+    if range_start > 0 and any(stream.mode == "copy" for stream in plan.streams):
+        logger.warn(
+            "Trimming active: copied audio is re-encoded as AAC "
+            "for a sample-accurate start."
+        )
+        plan = dataclasses.replace(
+            plan,
+            streams=tuple(
+                dataclasses.replace(stream, mode="aac")
+                if stream.mode == "copy"
+                else stream
+                for stream in plan.streams
+            ),
+        )
+    return plan
+
+
 def _run_chunked(
     source: Path,
     config: Config,
@@ -671,25 +711,17 @@ def _run_chunked(
         if not chunks:
             raise ValidationError("Chunk plan is empty")
         candidates = encoder_candidates(preset, options.encode.encoder, config.ffmpeg)
-        audio_mode = options.encode.audio or (
-            config.default_audio if config.default_audio != "auto" else preset.default_audio
+        audio_mode = _resolve_audio_mode(config, preset, options.encode.audio)
+        subs_mode = _resolve_subs_mode(config, preset, options.encode.subs)
+        audio_plan = _trim_safe_audio_plan(
+            media,
+            preset,
+            audio_mode,
+            options.encode.audio_bitrate,
+            options.encode.all_audio,
+            start,
+            logger,
         )
-        subs_mode = options.encode.subs or (
-            config.default_subs if config.default_subs != "auto" else preset.default_subs
-        )
-        audio_plan = plan_audio(
-            media, preset, audio_mode, options.encode.audio_bitrate, options.encode.all_audio
-        )
-        if start > 0 and any(stream.mode == "copy" for stream in audio_plan.streams):
-            audio_plan = dataclasses.replace(
-                audio_plan,
-                streams=tuple(
-                    dataclasses.replace(stream, mode="aac")
-                    if stream.mode == "copy"
-                    else stream
-                    for stream in audio_plan.streams
-                ),
-            )
         subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
         final_output = _resolve_output_path(
             job, preset.extension, options.encode, multiple_jobs=False
@@ -1298,25 +1330,16 @@ def _assemble_chunked_job(
         if config.default_subs != "auto"
         else preset.default_subs
     )
-    audio_plan = plan_audio(
-        media, preset, audio_mode, options.audio_bitrate, options.all_audio
+    audio_plan = _trim_safe_audio_plan(
+        media,
+        preset,
+        audio_mode,
+        options.audio_bitrate,
+        options.all_audio,
+        float(job.get("range_start") or 0.0),
+        logger,
     )
-    range_start = float(job.get("range_start") or 0.0)
-    if range_start > 0:
-        if any(stream.mode == "copy" for stream in audio_plan.streams):
-            logger.warn(
-                "Trimming active: copied audio is re-encoded as AAC "
-                "for a sample-accurate start."
-            )
-            audio_plan = dataclasses.replace(
-                audio_plan,
-                streams=tuple(
-                    dataclasses.replace(stream, mode="aac")
-                    if stream.mode == "copy"
-                    else stream
-                    for stream in audio_plan.streams
-                ),
-            )
+    if float(job.get("range_start") or 0.0) > 0:
         if media.chapters:
             logger.warn(
                 "Chapters come from the source and may not be shifted "
@@ -1500,28 +1523,16 @@ def run_assemble(
                 if config.default_subs != "auto"
                 else preset.default_subs
             )
-            audio_plan = plan_audio(
+            audio_plan = _trim_safe_audio_plan(
                 media,
                 preset,
                 audio_mode,
                 options.audio_bitrate,
                 options.all_audio,
+                float(job.get("range_start") or 0.0),
+                logger,
             )
-            range_start = float(job.get("range_start") or 0.0)
-            if range_start > 0:
-                if any(stream.mode == "copy" for stream in audio_plan.streams):
-                    logger.warn(
-                        "Trimming active: copied audio is re-encoded as AAC for a sample-accurate start."
-                    )
-                    audio_plan = dataclasses.replace(
-                        audio_plan,
-                        streams=tuple(
-                            dataclasses.replace(stream, mode="aac")
-                            if stream.mode == "copy"
-                            else stream
-                            for stream in audio_plan.streams
-                        ),
-                    )
+            if float(job.get("range_start") or 0.0) > 0:
                 if media.chapters:
                     logger.warn(
                         "Chapters come from the source and may not be shifted for the trimmed range."
