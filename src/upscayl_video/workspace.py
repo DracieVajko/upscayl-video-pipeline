@@ -151,7 +151,7 @@ def _split_one(
         recursive=False,
         force=options.force,
     )
-    return run_split([source], config, split, logger)[0]
+    return run_split([source], config, split, logger, assume_yes=options.assume_yes)[0]
 
 
 def _convert_layout(job: Job, logger: Logger) -> None:
@@ -440,7 +440,8 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
             logger.error(f"{job.job_id}: {exc}")
             failures.append((job.job_id, str(exc)))
 
-    _write_manifest(config, find_jobs(config.work_dir))
+    if not options.dry_run:
+        _write_manifest(config, find_jobs(config.work_dir))
     logger.info(f"Finished: {done} · skipped: {skipped} · failed: {len(failures)}")
     if failures:
         for job_id, message in failures:
