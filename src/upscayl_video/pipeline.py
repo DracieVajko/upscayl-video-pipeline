@@ -246,12 +246,15 @@ def _settings_differences(job: Job, media: MediaInfo, start: float, end: float |
         # not pass --end, even though the effective end is the source duration.
         "range_end": "" if options.end is None else f"{end:.3f}",
         "model": options.model,
-        "decode": options.decode,
         "denoise": options.denoise,
         "tonemap": "1" if options.tonemap else "0",
         "png_compression": str(options.png_compression),
         "jpeg_quality": str(options.jpeg_quality),
     }
+    # ``decode`` is stored resolved (cpu/gpu), so comparing the requested
+    # ``auto`` would refuse an identical re-split. Only pin it when explicit.
+    if options.decode != "auto":
+        expected["decode"] = options.decode
     differences: list[str] = []
     for key, value in expected.items():
         existing = job.get(key)
@@ -638,6 +641,8 @@ def _prepare_chunk_job(
         scale=scale,
         target_height=target,
     )
+    job.set("preset", options.encode.preset)
+    job.set("encoder", options.encode.encoder)
     job.set("frame_count", total_frames)
     job.set("upscaled_count", 0)
     job.set("chunk_seconds", chunk_seconds)
