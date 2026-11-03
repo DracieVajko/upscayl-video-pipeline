@@ -1,4 +1,4 @@
-"""Tests for the two-phase workspace flow."""
+﻿"""Tests for the two-phase workspace flow."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from upscayl_video.job import Job
 from upscayl_video.util import Logger
 from upscayl_video.workspace import (
     FinishOptions,
+    _upscaled_count,
     _convert_layout,
     _write_manifest,
     parse_ffmpeg_args,
@@ -77,6 +78,27 @@ class JobLayoutTests(unittest.TestCase):
             self.assertEqual(job.data["upscaled_dir"], "batch00001/out")
             self.assertEqual(job.data["layout"], "batches")
             self.assertFalse((job_dir / "frames").exists())
+
+
+class UpscaledCountTests(unittest.TestCase):
+    def test_counts_distinct_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            job_dir = Path(td) / "job"
+            out = job_dir / "batch00001" / "out"
+            out.mkdir(parents=True)
+            (out / "frame_00000001.png").write_bytes(b"x")
+            (out / "frame_00000001_dup.png").write_bytes(b"x")
+            (out / "frame_00000002.png").write_bytes(b"")
+            job = Job(job_dir, {"frames_dir": "batch00001/in", "upscaled_dir": "batch00001/out"})
+            self.assertEqual(_upscaled_count(job), 1)
+
+    def test_chunked_job_falls_back_to_frame_count(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            job_dir = Path(td) / "job"
+            job_dir.mkdir(parents=True)
+            (job_dir / ".done_chunk_0001").write_text("", encoding="utf-8")
+            job = Job(job_dir, {"frame_count": "42"})
+            self.assertEqual(_upscaled_count(job), 42)
 
 
 class ManifestTests(unittest.TestCase):
