@@ -690,6 +690,52 @@ def _trim_safe_audio_plan(
     return plan
 
 
+def _finalize_output(
+    job: Job,
+    temp_output: Path,
+    final_output: Path,
+    *,
+    config: Config,
+    logger: Logger,
+    preset,
+    media: MediaInfo,
+    encode_options,
+    expected_width: int,
+    expected_height: int,
+    audio_expected: bool,
+    subs_expected: int,
+    metadata: dict[str, object],
+) -> Path:
+    """Normalize, validate, publish and record one assembled video.
+
+    Callers keep the ``temp_output`` variable so their error handler can
+    discard a partial file; on success they clear it afterwards.
+    """
+    normalize_color_tags(
+        config.ffmpeg, config.ffprobe, temp_output, preset.container, logger
+    )
+    validate_output(
+        config.ffprobe,
+        temp_output,
+        job,
+        media,
+        encode_options,
+        expected_width,
+        expected_height,
+        audio_expected,
+        subs_expected,
+        logger,
+    )
+    os.replace(temp_output, final_output)
+    for key, value in metadata.items():
+        job.set(key, value)
+    job.clear_error()
+    job.mark_done("assemble")
+    if encode_options.cleanup:
+        return _publish_and_purge(job, final_output, config, logger)
+    return final_output
+
+
 def _run_chunked(
     source: Path,
     config: Config,
@@ -873,40 +919,32 @@ def _run_chunked(
         )
         mux[0] = str(config.ffmpeg)
         run_command(mux, logger=logger)
-        normalize_color_tags(
-            config.ffmpeg,
-            config.ffprobe,
-            temp_output,
-            preset.container,
-            logger,
-        )
-        validate_output(
-            config.ffprobe,
-            temp_output,
+        final_output = _finalize_output(
             job,
-            media,
-            options.encode,
-            expected_width,
-            expected_height,
-            audio_plan.enabled,
-            len(subtitle_plan.streams),
-            logger,
+            temp_output,
+            final_output,
+            config=config,
+            logger=logger,
+            preset=preset,
+            media=media,
+            encode_options=options.encode,
+            expected_width=expected_width,
+            expected_height=expected_height,
+            audio_expected=audio_plan.enabled,
+            subs_expected=len(subtitle_plan.streams),
+            metadata={
+                "preset": preset.name,
+                "encoder": options.encode.encoder,
+                "audio": audio_mode,
+                "subs": subs_mode,
+            },
         )
-        os.replace(temp_output, final_output)
         temp_output = None
         if not options.encode.keep_chunks:
             shutil.rmtree(job.chunks_dir, ignore_errors=True)
             # Markers are the chunk resume record; drop them only once the
             # segments they certify are gone.
             job.clear_chunk_markers()
-        job.set("preset", preset.name)
-        job.set("encoder", options.encode.encoder)
-        job.set("audio", audio_mode)
-        job.set("subs", subs_mode)
-        job.clear_error()
-        job.mark_done("assemble")
-        if options.cleanup:
-            final_output = _publish_and_purge(job, final_output, config, logger)
         return RunResult(source, job, final_output, None)
     except PipelineError as exc:
         discard_file(temp_output)
@@ -1391,37 +1429,29 @@ def _assemble_chunked_job(
         )
         mux[0] = str(config.ffmpeg)
         run_command(mux, logger=logger)
-        normalize_color_tags(
-            config.ffmpeg,
-            config.ffprobe,
-            temp_output,
-            preset.container,
-            logger,
-        )
-        validate_output(
-            config.ffprobe,
-            temp_output,
+        final_output = _finalize_output(
             job,
-            media,
-            options,
-            expected_width,
-            expected_height,
-            audio_plan.enabled,
-            len(subtitle_plan.streams),
-            logger,
+            temp_output,
+            final_output,
+            config=config,
+            logger=logger,
+            preset=preset,
+            media=media,
+            encode_options=options,
+            expected_width=expected_width,
+            expected_height=expected_height,
+            audio_expected=audio_plan.enabled,
+            subs_expected=len(subtitle_plan.streams),
+            metadata={
+                "preset": preset.name,
+                "encoder": options.encoder,
+                "audio": audio_mode,
+                "subs": subs_mode,
+            },
         )
-        os.replace(temp_output, final_output)
         if not options.keep_chunks:
             shutil.rmtree(job.chunks_dir, ignore_errors=True)
             job.clear_chunk_markers()
-        job.set("preset", preset.name)
-        job.set("encoder", options.encoder)
-        job.set("audio", audio_mode)
-        job.set("subs", subs_mode)
-        job.clear_error()
-        job.mark_done("assemble")
-        if options.cleanup:
-            final_output = _publish_and_purge(job, final_output, config, logger)
         return final_output
     except Exception:
         discard_file(temp_output)
@@ -1588,42 +1618,34 @@ def run_assemble(
                         hint=exc.stderr_tail or str(exc),
                     ) from exc
 
-            normalize_color_tags(
-                config.ffmpeg,
-                config.ffprobe,
-                temp_output,
-                preset.container,
-                logger,
-            )
-            validate_output(
-                config.ffprobe,
-                temp_output,
+            final_output = _finalize_output(
                 job,
-                media,
-                job_options,
-                expected_width,
-                expected_height,
-                audio_plan.enabled,
-                len(subtitle_plan.streams),
-                logger,
+                temp_output,
+                final_output,
+                config=config,
+                logger=logger,
+                preset=preset,
+                media=media,
+                encode_options=job_options,
+                expected_width=expected_width,
+                expected_height=expected_height,
+                audio_expected=audio_plan.enabled,
+                subs_expected=len(subtitle_plan.streams),
+                metadata={
+                    "upscaled_count": frame_set.count,
+                    "preset": preset.name,
+                    "encoder": options.encoder,
+                    "encoder_codec": candidate.video_codec,
+                    "audio": audio_mode,
+                    "audio_bitrate": options.audio_bitrate,
+                    "all_audio": options.all_audio,
+                    "subs": subs_mode,
+                    "ten_bit": options.ten_bit,
+                    "target_height": job_options.target_height or "",
+                },
             )
-            os.replace(temp_output, final_output)
             temp_output = None
             shutil.rmtree(job.sequence_dir, ignore_errors=True)
-            job.set("upscaled_count", frame_set.count)
-            job.set("preset", preset.name)
-            job.set("encoder", options.encoder)
-            job.set("encoder_codec", candidate.video_codec)
-            job.set("audio", audio_mode)
-            job.set("audio_bitrate", options.audio_bitrate)
-            job.set("all_audio", options.all_audio)
-            job.set("subs", subs_mode)
-            job.set("ten_bit", options.ten_bit)
-            job.set("target_height", job_options.target_height or "")
-            job.clear_error()
-            job.mark_done("assemble")
-            if options.cleanup:
-                final_output = _publish_and_purge(job, final_output, config, logger)
             outputs.append(final_output)
         except PipelineError as exc:
             discard_file(temp_output)
