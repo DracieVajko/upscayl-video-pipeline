@@ -330,11 +330,20 @@ def run_split_all(config: Config, options: SplitAllOptions, logger: Logger) -> i
 
 
 def _upscaled_count(job: Job) -> int:
-    return sum(
-        len(paths)
+    """Count distinct upscaled frames, ignoring duplicate or empty files.
+
+    Chunked jobs keep frames inside per-chunk segments instead of
+    ``batch00001/out``; for those, fall back to the recorded frame count so
+    ``finish`` can hand them to ``run_assemble`` instead of skipping them.
+    """
+    distinct = sum(
+        1
         for paths in scan_frames(job.upscaled_dir, recursive=True).values()
         if any(is_nonempty_file(path) for path in paths)
     )
+    if distinct == 0 and any(job.path.glob(".done_chunk_*")):
+        return job.get_int("frame_count") or 0
+    return distinct
 
 
 def _select_jobs(jobs: Sequence[Job], options: FinishOptions) -> list[Job]:
