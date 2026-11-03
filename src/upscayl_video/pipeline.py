@@ -1559,7 +1559,6 @@ def run_assemble(
                     hint=str(exc),
                 ) from exc
             job.clear_stage("assemble")
-            last_error: CommandError | None = None
             for index, candidate in enumerate(candidates):
                 command = build_assemble_command(
                     job,
@@ -1577,10 +1576,8 @@ def run_assemble(
                 command[0] = str(config.ffmpeg)
                 try:
                     run_command(command, logger=logger)
-                    last_error = None
                     break
                 except CommandError as exc:
-                    last_error = exc
                     if options.encoder == "auto" and index < len(candidates) - 1:
                         logger.warn(
                             f"Encoder {candidate.video_codec} failed; trying the next encoder."
@@ -1590,12 +1587,6 @@ def run_assemble(
                         f"Encoding failed for: {job.source_path}",
                         hint=exc.stderr_tail or str(exc),
                     ) from exc
-
-            if last_error is not None:
-                raise EncodeError(
-                    f"Encoding failed for: {job.source_path}",
-                    hint=last_error.stderr_tail or str(last_error),
-                ) from last_error
 
             normalize_color_tags(
                 config.ffmpeg,
