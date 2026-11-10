@@ -188,3 +188,11 @@ commonly 1–3 MiB each.
 ## License
 
 MIT. Upscayl is a separate AGPL-3.0 project; its models are not distributed here.
+
+---
+
+## Support this work
+
+If you find this project useful, consider supporting its ongoing development, maintenance, and improvements.
+
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github)](https://github.com/sponsors/DracieVajko)
