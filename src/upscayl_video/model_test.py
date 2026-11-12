@@ -7,10 +7,10 @@ import random
 import re
 import sys
 import webbrowser
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 from .config import Config
 from .errors import CommandError, DependencyError, ValidationError
@@ -24,7 +24,14 @@ from .upscayl import (
     resolve_icd,
     resolve_tile,
 )
-from .util import Logger, atomic_write_text, format_clock, human_bytes, run_command, sanitize_job_id
+from .util import (
+    Logger,
+    atomic_write_text,
+    format_clock,
+    human_bytes,
+    run_command,
+    sanitize_job_id,
+)
 
 
 @dataclass(frozen=True)

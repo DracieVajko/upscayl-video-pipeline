@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping
 
 from .errors import ValidationError
 from .probe import MediaInfo
@@ -118,7 +119,7 @@ class Job:
         logger: Logger,
         *,
         create: bool = True,
-    ) -> "Job":
+    ) -> Job:
         work_dir = Path(work_dir).expanduser().resolve()
         source = Path(source).expanduser().resolve()
         base_id = sanitize_job_id(source.stem)
@@ -170,7 +171,7 @@ class Job:
         return job
 
     @classmethod
-    def load(cls, path: Path) -> "Job":
+    def load(cls, path: Path) -> Job:
         path = Path(path)
         job_file = path / "job.txt"
         if not path.is_dir() or not job_file.is_file():
@@ -226,18 +227,14 @@ class Job:
     def record_error(self, exc: BaseException) -> None:
         """Persist a bounded error message, tolerating an unwritable job folder."""
         self.data["last_error"] = str(exc)[:500]
-        try:
+        with contextlib.suppress(OSError):
             self.save()
-        except OSError:
-            pass
 
     def clear_error(self) -> None:
         """Clear the recorded error and save, tolerating an unwritable job folder."""
         self.data["last_error"] = ""
-        try:
+        with contextlib.suppress(OSError):
             self.save()
-        except OSError:
-            pass
 
     def mark_done(self, stage: str) -> None:
         marker = self.path / f".done_{stage}"
@@ -255,10 +252,8 @@ class Job:
     def clear_chunk_markers(self) -> None:
         """Drop per-chunk completion markers once the job is fully assembled."""
         for marker in self.path.glob(".done_chunk_*"):
-            try:
+            with contextlib.suppress(OSError):
                 marker.unlink()
-            except OSError:
-                pass
 
     def is_chunked(self) -> bool:
         return any(self.path.glob(".done_chunk_*"))

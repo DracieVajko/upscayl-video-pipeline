@@ -22,6 +22,8 @@ secrets.*
 *.bak
 *.orig
 *.rej
+*.partial.*
+checkpoint
 
 # Python caches and build output
 __pycache__/

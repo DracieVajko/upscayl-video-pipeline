@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import shlex
 import shutil
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
 
 from .config import Config
 from .encode import EncodeOptions
@@ -19,6 +21,8 @@ from .job import Job
 from .pipeline import SplitOptions, find_jobs, run_assemble, run_split
 from .probe import (
     VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS,
+)
+from .probe import (
     probe_media,
     require_sdr,
 )
@@ -51,6 +55,13 @@ _BLOCKED_FFMPEG_ARGS = {
     "-s",
     "-aspect",
     "-pix_fmt",
+    # Alias spellings of the blocked structural flags.
+    "-vcodec",
+    "-acodec",
+    "-scodec",
+    "-dcodec",
+    "-vframes",
+    "-aframes",
 }
 
 
@@ -99,6 +110,7 @@ class FinishOptions:
     force: bool = False
     assume_yes: bool = False
     dry_run: bool = False
+    resume: bool = False
 
 
 def parse_ffmpeg_args(value: str | None) -> tuple[str, ...]:
@@ -227,10 +239,8 @@ def _write_manifest(config: Config, jobs: Sequence[Job]) -> None:
     readme = config.work_dir / "README-UPScayl.txt"
     if not jobs:
         for path in (manifest, readme):
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 path.unlink()
-            except FileNotFoundError:
-                pass
         return
 
     buffer = io.StringIO()
@@ -410,6 +420,19 @@ def _encode_options(config: Config, options: FinishOptions) -> EncodeOptions:
     )
 
 
+def _write_checkpoint(job: Job) -> None:
+    """Record that the job is finished, so a later --resume can skip it."""
+    try:
+        job.path.mkdir(parents=True, exist_ok=True)
+        (job.path / "checkpoint").write_text(
+            f"completed={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # A job folder that cannot hold the checkpoint is not a failure.
+        pass
+
+
 def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
     if options.crf is not None and options.quality is not None:
         raise ValidationError("--quality and --crf are mutually exclusive.")
@@ -427,11 +450,26 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
     skipped = 0
     failures: list[tuple[str, str]] = []
     for job in selected:
+        checkpoint = job.path / "checkpoint"
+        if options.resume and checkpoint.is_file():
+            logger.info(f"Resume: skipping completed job {job.job_id}")
+            skipped += 1
+            continue
         count = _upscaled_count(job)
         if count == 0:
             logger.warn(f"Skipping {job.job_id}: no upscaled frames in {job.upscaled_dir}")
             skipped += 1
             continue
+        if options.resume:
+            expected = len(scan_frames(job.frames_dir, recursive=True))
+            if expected > 0 and count >= expected:
+                logger.info(
+                    f"Resume: job {job.job_id} already upscaled ({count}/{expected}) "
+                    "- writing checkpoint"
+                )
+                _write_checkpoint(job)
+                skipped += 1
+                continue
         if options.dry_run:
             logger.info(
                 f"Dry run: would assemble {job.job_id} ({count} frames) "
@@ -444,6 +482,7 @@ def run_finish(config: Config, options: FinishOptions, logger: Logger) -> int:
             outputs = run_assemble([job], config, encode, logger, dry_run=options.dry_run)
             if outputs:
                 logger.info(f"Output: {outputs[0]}")
+            _write_checkpoint(job)
             done += 1
         except PipelineError as exc:
             logger.error(f"{job.job_id}: {exc}")

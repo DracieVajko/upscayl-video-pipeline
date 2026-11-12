@@ -1,0 +1,26 @@
+# Lint configuration for the V1 Python implementation.
+#
+# The rule set is deliberately explicit so the CI gate is deterministic and does
+# not change when the linter's defaults change.
+[lint]
+select = [
+    "E4",    # pycodestyle: imports and syntax
+    "E7",
+    "E9",
+    "F",     # pyflakes: undefined names, unused imports
+    "I",     # isort: import order
+    "UP",    # pyupgrade: modern Python syntax
+    "B",     # flake8-bugbear: common pitfalls
+    "SIM",   # flake8-simplify: simplifiable code
+    "C4",    # flake8-comprehensions
+]
+ignore = [
+    # Windows environment variable names are canonically mixed case.
+    "SIM112",
+    # Nested `with` keeps the test bodies readable.
+    "SIM117",
+]
+
+[lint.per-file-ignores]
+# Test helpers may use long lines and import the package under test directly.
+"tests/*" = ["E501"]

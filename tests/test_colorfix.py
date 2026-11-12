@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe
 from upscayl_video.encode import normalize_color_tags
 from upscayl_video.probe import probe_media
 from upscayl_video.util import Logger
-from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe
 
 
 def run(args: list[str]) -> None:

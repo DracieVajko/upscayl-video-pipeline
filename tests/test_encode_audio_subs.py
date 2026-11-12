@@ -1,12 +1,11 @@
 import unittest
 from pathlib import Path
 
+from tests.factories import make_media_info
 from upscayl_video.encode import PRESETS, plan_audio, plan_subtitles
 from upscayl_video.errors import ValidationError
 from upscayl_video.probe import StreamInfo
 from upscayl_video.util import Logger
-from tests.factories import make_media_info
-
 
 AAC = StreamInfo(1, "aac", channels=2)
 MP3 = StreamInfo(1, "mp3", channels=2)

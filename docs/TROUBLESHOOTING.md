@@ -57,6 +57,15 @@ The frames are converted to 8-bit RGB for Upscayl. This is expected; the tool
 warns. `--10bit` on assemble only affects the final HEVC encode and cannot
 recover the discarded bits.
 
+## Upscayl smoke test fails with `vkEnumeratePhysicalDevices failed -3`
+
+On Windows machines with both an AMD and an NVIDIA GPU, the AMD Vulkan ICD can
+break device enumeration, so Upscayl reports `vkEnumeratePhysicalDevices failed
+-3` even though the NVIDIA GPU is present. `--icd auto` searches the NVIDIA
+driver store for a working ICD and uses it. If the automatic search does not
+find it, run `doctor` and set `icd` in `config.txt` to the path it prints, or
+pass `--icd PATH` directly.
+
 ## Output validation failed
 
 The encode finished but the result did not match the expected dimensions,

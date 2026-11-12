@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented here.
 
+## [0.3.4] — 2026-11-12
+
+### Added
+
+- **Continuous integration.** `.github/workflows/ci.yml` runs the V1 test suite
+  and ruff on Ubuntu, the V2 PowerShell harness, PSScriptAnalyzer and the V1 ↔ V2
+  cross-version parity matrix on Windows, the V2 bash harness and ShellCheck on
+  Ubuntu, and a bash 3.2 syntax check on macOS.
+- `ruff.toml` and `.shellcheckrc` pin the lint rule sets so the CI gate is
+  deterministic.
+- `docs/PLATFORMS.md` — how to install and run on Windows and on Linux/macOS.
+- `docs/PARITY.md` — the V1 ↔ V2 feature comparison, including the differences
+  that exist on purpose.
+- `finish --resume` in V1: completed jobs are skipped through
+  `work/<job>/checkpoint`, and a job whose upscaled frames already cover the
+  input frames is treated as done. The flag was documented and implemented in
+  the V2 runtimes, but V1 never had it.
+- The bash runtime accepts `finish --ffmpeg-args`, which the usage guide
+  documented but only the PowerShell runtime accepted.
+
+### Changed
+
+- **The V2 runtimes are split into modules.** `v2/windows/UpscaylVideo.ps1` and
+  `v2/unix/upscayl-video.sh` are now entry points that load 17 modules each
+  (16 in bash, plus the shared exception type in PowerShell). The module layout
+  is identical in both runtimes, so the implementations can be read side by
+  side. The entry points keep their names, their behaviour and their
+  `UPSCAYL_V2_LIB=1` library mode, so the test harnesses and the launchers are
+  unaffected.
+- Both V2 help screens list every supported command, including `split-all`,
+  `finish` and `model-test`.
+- The FFmpeg argument denylist rejects the alias spellings (`-vcodec`,
+  `-acodec`, `-scodec`, `-dcodec`, `-vframes`, `-aframes`) in all three
+  runtimes.
+
+### Fixed
+
+- The bash `finish` command no longer word-splits job paths, so a job folder
+  with spaces in its name is handled correctly.
+- The design spec is valid UTF-8 again: its trailing "superseded note" was
+  stored as UTF-16LE inside a UTF-8 file.
+- `v2/README.md` and `docs/USAGE.md` are free of the mojibake that the
+  double-encoded punctuation produced, and no file carries a stray byte order
+  mark.
+- The silent `catch` blocks in the V2 PowerShell runtime report what they
+  swallowed in the debug log, and the automatic variables `$profile` and
+  `$matches` are no longer overwritten.
+- The V1 package no longer overwrites the automatic variable `$profile`, and the
+  blind `except Exception` assertions in the tests name the expected error.
+- The version is read from the package in the tests instead of being hardcoded,
+  and a test fails when the V1, V2 PowerShell and V2 bash versions drift apart.
+
+### Validated
+
+- 211 V1 tests, 71 V2 PowerShell tests, 70 V2 bash unit tests and the 6-case
+  V1 ↔ V2 cross-version matrix pass. The full record is in
+  `docs/VALIDATION.md`.
+
 ## [0.3.3] — 2026-11-03
 
 ### Added

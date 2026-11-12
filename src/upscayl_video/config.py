@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
 
 from .errors import DependencyError, ValidationError
 from .util import read_text_utf8
@@ -74,9 +74,7 @@ def _is_path_like(value: str) -> bool:
         return True
     if os.sep in value or "/" in value or "\\" in value:
         return True
-    if os.name == "nt" and ":" in value:
-        return True
-    return False
+    return bool(os.name == "nt" and ":" in value)
 
 
 def _names_for(tool: str) -> list[str]:

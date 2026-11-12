@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_launchers import package_version
 from tests.util import find_ffmpeg, find_ffprobe, make_clip
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +22,7 @@ class TestCli(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("0.3.3", result.stdout)
+        self.assertIn(package_version(), result.stdout)
 
     def test_split_help(self):
         result = subprocess.run(

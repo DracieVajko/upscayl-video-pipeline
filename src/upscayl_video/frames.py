@@ -56,7 +56,7 @@ class FrameSet:
     def is_normalized(self) -> bool:
         if not self.paths:
             return False
-        for index, path in zip(self.indices, self.paths):
+        for index, path in zip(self.indices, self.paths, strict=False):
             if path.name != f"frame_{index:08d}.{self.extension}":
                 return False
         return True
@@ -81,9 +81,7 @@ def check_frame_signature(path: Path) -> bool:
         return True
     if header.startswith(b"\xff\xd8\xff"):
         return True
-    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return True
-    return False
+    return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
 
 
 def scan_frames(directory: Path, *, recursive: bool = False) -> dict[int, list[Path]]:
@@ -221,7 +219,7 @@ def build_sequence(frame_set: FrameSet, job: Job, logger: Logger) -> FrameSet:
         shutil.rmtree(sequence)
     sequence.mkdir(parents=True, exist_ok=True)
     targets: list[Path] = []
-    for index, source in zip(frame_set.indices, frame_set.paths):
+    for index, source in zip(frame_set.indices, frame_set.paths, strict=False):
         target = sequence / f"frame_{index:08d}.{frame_set.extension}"
         try:
             os.link(source, target)

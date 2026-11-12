@@ -6,6 +6,7 @@ from unittest.mock import patch
 from upscayl_video.config import load_config
 from upscayl_video.errors import DependencyError, ValidationError
 from upscayl_video.upscayl import (
+    _find_nvidia_icd_windows,
     discover_upscayl,
     find_nvidia_icd,
     list_models,
@@ -91,6 +92,30 @@ class TestIcd(unittest.TestCase):
     @patch("upscayl_video.upscayl._find_nvidia_icd_windows", return_value=None)
     def test_auto_without_nvidia_returns_none(self, _find):
         self.assertIsNone(find_nvidia_icd())
+
+
+class TestIcdDiscovery(unittest.TestCase):
+    """The ICD is looked up in the NVIDIA driver store."""
+
+    def test_finds_the_icd_in_the_driver_store(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            system32 = Path(td) / "System32"
+            candidate = (
+                system32
+                / "DriverStore"
+                / "FileRepository"
+                / "nvaci.inf_amd64_1234"
+                / "nv-vk64.json"
+            )
+            candidate.parent.mkdir(parents=True)
+            candidate.write_text("{}", encoding="utf-8")
+            self.assertEqual(_find_nvidia_icd_windows(system32), candidate)
+
+    def test_returns_none_without_an_icd(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            system32 = Path(td) / "System32"
+            (system32 / "DriverStore" / "FileRepository").mkdir(parents=True)
+            self.assertIsNone(_find_nvidia_icd_windows(system32))
 
 
 if __name__ == "__main__":

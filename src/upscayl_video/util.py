@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence
 
 from .errors import CommandError, ValidationError
 
@@ -156,10 +157,8 @@ def atomic_write_text(path: Path, text: str) -> None:
         os.replace(temporary, path)
     finally:
         if temporary.exists():
-            try:
+            with contextlib.suppress(OSError):
                 temporary.unlink()
-            except OSError:
-                pass
 
 
 def read_text_utf8(path: Path) -> str:
@@ -227,10 +226,8 @@ def discard_file(path: Path | None) -> None:
     """Delete a best-effort temporary file, ignoring filesystem errors."""
     if path is None:
         return
-    try:
+    with contextlib.suppress(OSError):
         path.unlink()
-    except OSError:
-        pass
 
 
 def sanitize_job_id(stem: str) -> str:

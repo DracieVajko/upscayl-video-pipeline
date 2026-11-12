@@ -2,12 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.util import find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.config import load_config
 from upscayl_video.frames import extract_frames
 from upscayl_video.job import Job
 from upscayl_video.probe import probe_media
 from upscayl_video.util import Logger
-from tests.util import find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestExtractIntegration(unittest.TestCase):

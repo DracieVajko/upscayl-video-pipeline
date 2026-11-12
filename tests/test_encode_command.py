@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.factories import make_media_info
 from upscayl_video.encode import (
     PRESETS,
     AudioPlan,
@@ -20,7 +21,6 @@ from upscayl_video.frames import FrameSet
 from upscayl_video.job import Job
 from upscayl_video.probe import StreamInfo
 from upscayl_video.util import Logger
-from tests.factories import make_media_info
 
 
 def make_job(td: str) -> Job:

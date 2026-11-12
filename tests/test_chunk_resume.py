@@ -4,8 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.util import find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions
+from upscayl_video.errors import ValidationError
 from upscayl_video.pipeline import (
     RunOptions,
     SplitOptions,
@@ -14,7 +16,6 @@ from upscayl_video.pipeline import (
     run_assemble,
 )
 from upscayl_video.util import Logger
-from tests.util import find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestChunkResume(unittest.TestCase):
@@ -156,7 +157,7 @@ class TestChunkResume(unittest.TestCase):
     def test_low_disk_aborts_chunk(self):
         cfg = self.config()
         with patch("upscayl_video.pipeline.free_bytes", return_value=0):
-            with self.assertRaises(Exception):
+            with self.assertRaises(ValidationError):
                 run_all([self.clip], cfg, self.options(), Logger(quiet=True))
 
 

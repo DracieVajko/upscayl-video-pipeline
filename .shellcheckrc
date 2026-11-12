@@ -1,0 +1,18 @@
+# ShellCheck configuration for the V2 bash runtime.
+#
+# SC2034 / SC2153 - the runtime is split into modules, and each module defines
+#                   state that the other modules use. ShellCheck analyses one
+#                   file at a time and cannot see the cross-module usage.
+# SC2088          - the tilde is matched literally to detect "~" paths, so it
+#                   must not be expanded by the shell.
+# SC2015          - "a && b || die" is the guard idiom used throughout this code.
+# SC2004          - "${var}" inside arithmetic expressions is explicit on purpose.
+# SC1091          - the modules are sourced through a variable path.
+# SC2319          - the test harness shares local variables between helpers.
+disable=SC2034
+disable=SC2153
+disable=SC2088
+disable=SC2015
+disable=SC2004
+disable=SC1091
+disable=SC2319

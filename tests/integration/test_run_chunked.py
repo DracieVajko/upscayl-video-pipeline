@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions
 from upscayl_video.pipeline import (
@@ -13,7 +14,6 @@ from upscayl_video.pipeline import (
     run_all,
 )
 from upscayl_video.util import Logger
-from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestChunkedRun(unittest.TestCase):

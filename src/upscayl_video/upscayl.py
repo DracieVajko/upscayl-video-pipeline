@@ -48,18 +48,52 @@ def list_models(models_dir: Path) -> list[ModelInfo]:
     return models
 
 
-def _find_nvidia_icd_windows() -> Path | None:
-    pattern = r"C:\Windows\System32\DriverStore\FileRepository\nv*\nv-vk64.json"
-    matches = sorted(glob.glob(pattern))
-    for match in matches:
+def _find_nvidia_icd_windows_all(system32: Path | None = None) -> list[Path]:
+    """All NVIDIA Vulkan ICDs in the driver store.
+
+    The driver store can hold more than one NVIDIA package. Only one of them
+    may work on the current machine, so the caller can try them in turn.
+    """
+    base = system32
+    if base is None:
+        root = os.environ.get("SystemRoot") or r"C:\Windows"
+        base = Path(root) / "System32"
+    pattern = (base / "DriverStore" / "FileRepository").as_posix() + "/nv*/nv-vk64.json"
+    found: list[Path] = []
+    for match in sorted(glob.glob(pattern)):
+        path = Path(match)
+        if path.is_file() and path not in found:
+            found.append(path)
+    return found
+
+
+def _find_nvidia_icd_windows(system32: Path | None = None) -> Path | None:
+    """Locate the NVIDIA Vulkan ICD in the driver store.
+
+    The pattern is built with forward slashes: ``glob`` treats a backslash as
+    an escape character, so a Windows path pattern never matched.
+    """
+    base = system32
+    if base is None:
+        root = os.environ.get("SystemRoot") or r"C:\Windows"
+        base = Path(root) / "System32"
+    pattern = (base / "DriverStore" / "FileRepository").as_posix() + "/nv*/nv-vk64.json"
+    for match in sorted(glob.glob(pattern)):
         path = Path(match)
         if path.is_file():
             return path
     return None
 
 
+def find_nvidia_icds() -> list[Path]:
+    """Every NVIDIA Vulkan ICD in the driver store, in discovery order."""
+    if os.name != "nt":
+        return []
+    return _find_nvidia_icd_windows_all()
+
+
 def find_nvidia_icd() -> Path | None:
-    if not os.name == "nt":
+    if os.name != "nt":
         return None
     return _find_nvidia_icd_windows()
 
@@ -170,7 +204,7 @@ def discover_upscayl(config: Config) -> UpscaylPaths:
 def detect_vram_mb() -> int | None:
     smi = shutil.which("nvidia-smi")
     if smi:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             [
                 smi,
                 "--query-gpu=memory.total",
@@ -188,32 +222,6 @@ def detect_vram_mb() -> int | None:
                     return int(line.strip())
                 except ValueError:
                     continue
-    if os.name == "nt":
-        try:
-            result = subprocess.run(
-                [
-                    "wmic",
-                    "path",
-                    "win32_VideoController",
-                    "get",
-                    "AdapterRAM",
-                ],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                check=False,
-            )
-        except OSError:
-            return None
-        if result.returncode == 0:
-            values = [
-                int(line.strip())
-                for line in result.stdout.splitlines()
-                if line.strip().isdigit()
-            ]
-            if values:
-                return max(values) // (1024 * 1024)
     return None
 
 

@@ -201,6 +201,7 @@ if command -v ffmpeg >/dev/null 2>&1; then
 fi
 
 # --- --opt=value parsing keeps every positional argument ---
+# shellcheck disable=SC2209  # the value happens to be a command name
 COMMAND=split
 parse_options --format=png "first.mp4" "second.mp4"
 assert_eq "png" "$SP_FORMAT" "opt=value format"

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from . import __version__
 from .config import load_config
@@ -13,6 +13,7 @@ from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError, ValidationError
 from .menu import run_menu
+from .model_test import ModelTestOptions, run_model_test
 from .pipeline import (
     RunOptions,
     SplitOptions,
@@ -27,7 +28,6 @@ from .pipeline import (
     run_upscale,
 )
 from .util import Logger
-from .model_test import ModelTestOptions, run_model_test
 from .workspace import SplitAllOptions, run_split_all
 
 
@@ -158,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--10bit", dest="ten_bit", action="store_true")
     finish.add_argument("--ffmpeg-args", default=None)
     finish.add_argument("--keep", action="store_true")
+    finish.add_argument("--resume", action="store_true")
 
     assemble = subparsers.add_parser(
         "assemble",
@@ -385,6 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     force=bool(getattr(args, "force", False)),
                     assume_yes=bool(getattr(args, "yes", False)),
                     dry_run=bool(getattr(args, "dry_run", False)),
+                    resume=bool(getattr(args, "resume", False)),
                 ),
                 logger,
             )

@@ -1,4 +1,4 @@
-# Test-V2.ps1 -- plain PowerShell test harness for the V2 Windows implementation.
+﻿# Test-V2.ps1 -- plain PowerShell test harness for the V2 Windows implementation.
 # No Pester dependency. Exits nonzero when any assertion fails.
 
 $ErrorActionPreference = 'Stop'

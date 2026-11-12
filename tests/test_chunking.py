@@ -2,14 +2,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.chunking import concat_segments, plan_chunks
 from upscayl_video.config import load_config
-from upscayl_video.encode import EncodeOptions, EncoderChoice, PRESETS, build_segment_command
+from upscayl_video.encode import (
+    PRESETS,
+    EncodeOptions,
+    EncoderChoice,
+    build_segment_command,
+)
 from upscayl_video.errors import ValidationError
 from upscayl_video.frames import FrameSet
 from upscayl_video.pipeline import SplitOptions, run_split
 from upscayl_video.util import Logger
-from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestPlan(unittest.TestCase):

@@ -6,11 +6,12 @@ import dataclasses
 import glob
 import os
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Sequence
 
+from .chunking import concat_segments, plan_chunks
 from .config import Config
 from .disk import (
     check_estimate,
@@ -19,7 +20,6 @@ from .disk import (
     sample_frame_bytes,
     with_free_space,
 )
-from .chunking import concat_segments, plan_chunks
 from .encode import (
     EncodeOptions,
     build_assemble_command,
@@ -54,6 +54,8 @@ from .frames import (
 from .job import Job, find_jobs
 from .probe import (
     VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS,
+)
+from .probe import (
     MediaInfo,
     parse_rational,
     probe_first_frame_dimensions,
@@ -357,14 +359,12 @@ def run_split(
                     "Existing job was split with different settings.",
                     hint="Use --force to re-split. Differences: " + "; ".join(differences),
                 )
-        if has_frames and options.force:
-            if not dry_run:
-                if not assume_yes:
-                    answer = input(f"Clear existing frames for {job.job_id}? [y/N] ").strip().lower()
-                    if answer not in {"y", "yes"}:
-                        raise ValidationError("Aborted by user.")
-                _clear_split_outputs(job)
-
+        if has_frames and options.force and not dry_run:
+            if not assume_yes:
+                answer = input(f"Clear existing frames for {job.job_id}? [y/N] ").strip().lower()
+                if answer not in {"y", "yes"}:
+                    raise ValidationError("Aborted by user.")
+            _clear_split_outputs(job)
         if options.target_height is not None and options.target_height % 2:
             logger.warn(
                 f"--target-height {options.target_height} is odd; rounding up to "
@@ -1381,12 +1381,10 @@ def _assemble_chunked_job(
         float(job.get("range_start") or 0.0),
         logger,
     )
-    if float(job.get("range_start") or 0.0) > 0:
-        if media.chapters:
-            logger.warn(
-                "Chapters come from the source and may not be shifted "
-                "for the trimmed range."
-            )
+    if float(job.get("range_start") or 0.0) > 0 and media.chapters:
+        logger.warn(
+            "Chapters come from the source and may not be shifted for the trimmed range."
+        )
     subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
 
     final_output = _resolve_output_path(
@@ -1559,11 +1557,10 @@ def run_assemble(
                 float(job.get("range_start") or 0.0),
                 logger,
             )
-            if float(job.get("range_start") or 0.0) > 0:
-                if media.chapters:
-                    logger.warn(
-                        "Chapters come from the source and may not be shifted for the trimmed range."
-                    )
+            if float(job.get("range_start") or 0.0) > 0 and media.chapters:
+                logger.warn(
+                    "Chapters come from the source and may not be shifted for the trimmed range."
+                )
             subtitle_plan = plan_subtitles(media, preset, subs_mode, logger)
             candidates = encoder_candidates(preset, options.encoder, config.ffmpeg)
             final_output = _resolve_output_path(

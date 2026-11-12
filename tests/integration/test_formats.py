@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions
 from upscayl_video.pipeline import SplitOptions, run_assemble, run_split
 from upscayl_video.util import Logger
-from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 
 
 def run(ffmpeg: str, args: list[str]) -> None:

@@ -12,8 +12,8 @@ from upscayl_video.job import Job
 from upscayl_video.util import Logger
 from upscayl_video.workspace import (
     FinishOptions,
-    _upscaled_count,
     _convert_layout,
+    _upscaled_count,
     _write_manifest,
     parse_ffmpeg_args,
     run_finish,
@@ -48,6 +48,63 @@ class FinishDryRunTests(unittest.TestCase):
             code = run_finish(config, FinishOptions(all_jobs=True, dry_run=True), logger)
             self.assertEqual(code, 0)
             self.assertFalse((root / "output").exists())
+
+
+class FinishResumeTests(unittest.TestCase):
+    """`finish --resume` skips jobs that are already completed."""
+
+    def _job(self, root: Path) -> Path:
+        job_dir = root / "work" / "clip"
+        (job_dir / "batch00001" / "out").mkdir(parents=True)
+        (job_dir / "batch00001" / "in").mkdir(parents=True)
+        (job_dir / "batch00001" / "out" / "frame_00000001.png").write_bytes(b"x")
+        (job_dir / "job.txt").write_text(
+            "source=" + str(root / "clip.mp4") + "\n"
+            "frames_dir=batch00001/in\n"
+            "upscaled_dir=batch00001/out\n",
+            encoding="utf-8",
+        )
+        return job_dir
+
+    def _config(self, root: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            work_dir=root / "work",
+            output_dir=root / "output",
+            default_preset="mp4-h264",
+            default_encoder="cpu",
+        )
+
+    def test_options_carry_resume(self) -> None:
+        self.assertTrue(FinishOptions(resume=True).resume)
+        self.assertFalse(FinishOptions().resume)
+
+    def test_resume_skips_a_job_with_a_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job_dir = self._job(root)
+            (job_dir / "checkpoint").write_text("completed=2026-11-12T00:00:00Z\n", encoding="utf-8")
+            code = run_finish(self._config(root), FinishOptions(all_jobs=True, resume=True), Logger())
+            self.assertEqual(code, 0)
+            self.assertFalse((root / "output").exists())
+
+    def test_resume_treats_a_fully_upscaled_job_as_done(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job_dir = self._job(root)
+            (job_dir / "batch00001" / "in" / "frame_00000001.png").write_bytes(b"x")
+            code = run_finish(self._config(root), FinishOptions(all_jobs=True, resume=True), Logger())
+            self.assertEqual(code, 0)
+            self.assertTrue((job_dir / "checkpoint").is_file())
+
+    def test_without_resume_a_checkpoint_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            job_dir = self._job(root)
+            (job_dir / "checkpoint").write_text("completed=2026-11-12T00:00:00Z\n", encoding="utf-8")
+            code = run_finish(self._config(root), FinishOptions(all_jobs=True), Logger())
+            # The job was not skipped: the assemble path ran and failed on the
+            # placeholder frames, so the run reports the failure.
+            self.assertEqual(code, 1)
 
 
 class JobLayoutTests(unittest.TestCase):

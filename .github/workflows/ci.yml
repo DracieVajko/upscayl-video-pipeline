@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  v1-python:
+    name: V1 Python - tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          ffmpeg -version | head -n 1
+
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff
+
+      - name: Syntax and import check
+        run: python -m compileall -q src upscayl-video.py
+
+      - name: Lint
+        run: ruff check src tests upscayl-video.py
+
+      - name: Unit and integration tests
+        run: python -m unittest discover -s tests -v
+
+  v2-powershell:
+    name: V2 PowerShell - tests and static analysis
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          Import-Module PSScriptAnalyzer
+          (Get-Module PSScriptAnalyzer).Version
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --no-progress --yes
+            refreshenv
+          }
+          ffmpeg -version | Select-Object -First 1
+
+      - name: Parse every PowerShell script
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem -Path v2 -Recurse -Include *.ps1 | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors) { $errors += $parseErrors }
+          }
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_.Message }
+            exit 1
+          }
+          Write-Host "All PowerShell scripts parse cleanly."
+
+      - name: Static analysis
+        shell: pwsh
+        run: |
+          $findings = Invoke-ScriptAnalyzer -Path v2 -Recurse -Settings .github/psscriptanalyzer/PSScriptAnalyzerSettings.psd1
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            exit 1
+          }
+          Write-Host "PSScriptAnalyzer reports no findings."
+
+      - name: V2 PowerShell tests
+        shell: pwsh
+        run: ./v2/tests/Test-V2.ps1
+
+      - name: V1 to V2 cross-version parity matrix
+        shell: pwsh
+        run: ./v2/tests/Run-Parity.ps1
+
+  v2-bash:
+    name: V2 bash - tests and static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+          shellcheck --version
+
+      - name: Syntax check every shell script
+        run: |
+          for script in v2/unix/upscayl-video.sh v2/unix/lib/*.sh v2/tests/*.sh upscayl-video.sh; do
+            bash -n "$script" || exit 1
+          done
+          echo "All shell scripts parse cleanly."
+
+      - name: Static analysis
+        run: |
+          shellcheck -x --source-path=SCRIPTDIR v2/unix/upscayl-video.sh
+          shellcheck v2/unix/lib/*.sh
+          shellcheck v2/tests/*.sh
+
+      - name: V2 bash tests
+        run: bash v2/tests/Test-V2.sh
+
+  v2-bash-32:
+    name: V2 bash - bash 3.2 syntax (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the system bash version
+        run: /bin/bash --version | head -n 1
+
+      - name: Syntax check with the system bash 3.2
+        run: |
+          for script in v2/unix/upscayl-video.sh v2/unix/lib/*.sh; do
+            /bin/bash -n "$script" || exit 1
+          done
+          echo "All scripts parse with the system bash."

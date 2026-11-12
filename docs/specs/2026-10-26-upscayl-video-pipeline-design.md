@@ -267,15 +267,22 @@ upscayl-video-pipeline/
 │   ├── encode.py                 # presets, encoder selection, audio/subs, concat
 │   ├── disk.py                   # sample estimates, free space, chunk decision
 │   ├── pipeline.py               # orchestration, chunking, resume, cleanup
+│   ├── chunking.py               # chunk planning and segment concatenation
+│   ├── workspace.py              # split-all / finish workspace flow
+│   ├── model_test.py             # model comparison report
+│   ├── progress.py               # progress reporting and ETA
+│   ├── errors.py                 # shared error types and exit codes
 │   ├── doctor.py                 # environment checks
 │   ├── menu.py                   # interactive menu
 │   └── util.py                   # logging, subprocess, paths, errors
 ├── v2/
 │   ├── windows/
 │   │   ├── UpscaylVideo.bat      # V2 Windows launcher/menu
-│   │   └── UpscaylVideo.ps1      # V2 full implementation
+│   │   ├── UpscaylVideo.ps1      # V2 entry point
+│   │   └── modules/              # V2 implementation modules (dot-sourced)
 │   └── unix/
-│       └── upscayl-video.sh      # V2 full implementation
+│       ├── upscayl-video.sh      # V2 entry point
+│       └── lib/                  # V2 implementation modules (sourced)
 ├── input/                          # optional drop folder for input videos
 ├── work/                           # default work directory (gitignored)
 ├── tests/
@@ -514,12 +521,15 @@ Markers are empty files. They are written only after validation. Deleting a mark
 
 ```
 upscayl-video doctor
-upscayl-video split   <video...> [options]
-upscayl-video upscale <job...>  [options]
-upscayl-video assemble <job...> [options]
-upscayl-video run     <video...> [options]
-upscayl-video status  [options]
-upscayl-video clean   <job...>  [options]
+upscayl-video split      <video...> [options]
+upscayl-video split-all  [options]
+upscayl-video upscale    <job...>  [options]
+upscayl-video assemble   <job...> [options]
+upscayl-video finish     [options]
+upscayl-video run        <video...> [options]
+upscayl-video model-test <video> [options]
+upscayl-video status     [options]
+upscayl-video clean      <job...>  [options]
 ```
 
 V2 uses the same command names:
@@ -1874,8 +1884,11 @@ Results are summarized in section 5. No system settings were changed during rese
 ## Appendix D — Open questions
 
 None. All design decisions are resolved in section 16. If the user requests a change during implementation, it must be recorded in this spec before the affected phase starts.
-#   S U P E R S E D E D   N O T E  
- T h i s   s p e c   i s   s u p e r s e d e d   b y   d o c s / U S A G E . m d ,   C H A N G E L O G . m d ,   a n d   R E A D M E . m d   a s   o f   r e l e a s e   0 . 3 . 2 .   C o m p o n e n t   l i s t   u p d a t e d   b e l o w .  
- U p d a t e d   c o m p o n e n t s :   c l i ,   c o n f i g ,   j o b ,   p r o b e ,   f r a m e s ,   u p s c a y l ,   e n c o d e ,   d i s k ,   c h u n k i n g ,   p i p e l i n e ,   d o c t o r ,   m e n u ,   m o d e l _ t e s t ,   w o r k s p a c e ,   p r o g r e s s ,   u t i l ,   e r r o r s   ( 1 6   m o d u l e s )  
- U p d a t e d   c o m m a n d s :   d o c t o r ,   s p l i t ,   s p l i t - a l l ,   m o d e l - t e s t ,   u p s c a l e ,   a s s e m b l e ,   f i n i s h ,   r u n ,   s t a t u s ,   c l e a n   ( 1 0   c o m m a n d s )  
- 
+# SUPERSEDED NOTE
+
+This spec is superseded by docs/USAGE.md, CHANGELOG.md, and README.md as of release 0.3.4. Component list updated below.
+
+Updated components: cli, config, job, probe, frames, upscayl, encode, disk, chunking, pipeline, doctor, menu, model_test, workspace, progress, util, errors (17 modules)
+
+Updated commands: doctor, split, split-all, model-test, upscale, assemble, finish, run, status, clean (10 commands)
+

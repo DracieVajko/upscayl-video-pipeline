@@ -3,12 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.factories import make_media_info
+from tests.util import find_ffmpeg, find_ffprobe, make_clip
 from upscayl_video.config import load_config
 from upscayl_video.errors import DiskSpaceError, ValidationError
 from upscayl_video.pipeline import SplitOptions, resolve_inputs, run_split
 from upscayl_video.util import Logger
-from tests.factories import make_media_info
-from tests.util import find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestResolveInputs(unittest.TestCase):
@@ -45,12 +45,12 @@ class TestSplit(unittest.TestCase):
         cls.td.cleanup()
 
     def options(self, **overrides):
-        values = dict(
-            fps=None, start=None, end=None, format="png", jpeg_quality=1,
-            png_compression=3, denoise="none", tonemap=False, decode="cpu",
-            scale=2, target_height=None, model="upscayl-standard-4x",
-            verify_frames=False, recursive=False, force=False,
-        )
+        values = {
+            "fps": None, "start": None, "end": None, "format": "png", "jpeg_quality": 1,
+            "png_compression": 3, "denoise": "none", "tonemap": False, "decode": "cpu",
+            "scale": 2, "target_height": None, "model": "upscayl-standard-4x",
+            "verify_frames": False, "recursive": False, "force": False,
+        }
         values.update(overrides)
         return SplitOptions(**values)
 

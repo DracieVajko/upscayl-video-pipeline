@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.util import find_ffmpeg, find_ffprobe, make_clip, ffprobe_json
+from tests.util import ffprobe_json, find_ffmpeg, find_ffprobe, make_clip
 
 
 class TestManualWorkflow(unittest.TestCase):

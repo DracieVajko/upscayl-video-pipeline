@@ -9,15 +9,15 @@ from pathlib import Path
 
 from .config import Config
 from .disk import free_bytes
+from .encode import parse_available_encoders
 from .errors import DependencyError
 from .upscayl import (
     discover_upscayl,
-    find_nvidia_icd,
+    find_nvidia_icds,
     list_models,
     resolve_icd,
     smoke_test,
 )
-from .encode import parse_available_encoders
 from .util import Logger, human_bytes, run_command
 
 
@@ -143,14 +143,18 @@ def check_upscayl(
         logger,
         ffmpeg=config.ffmpeg,
     )
-    if not ok and icd is None:
-        nvidia = find_nvidia_icd()
-        if nvidia is not None:
+    if not ok:
+        # The NVIDIA driver store can hold more than one Vulkan ICD package and
+        # only one of them may work on this machine. Try them in turn and
+        # report the one that works, so the user can pin it in config.txt.
+        for candidate in find_nvidia_icds():
+            if icd is not None and candidate == icd:
+                continue
             retry_ok, retry_detail = smoke_test(
                 paths,
                 models[0].name,
                 128,
-                nvidia,
+                candidate,
                 logger,
                 ffmpeg=config.ffmpeg,
             )
@@ -158,9 +162,9 @@ def check_upscayl(
                 results.append(
                     CheckResult(
                         "upscayl_smoke",
-                        "FAIL",
-                        "fails with the default Vulkan ICD; forcing the NVIDIA ICD works. "
-                        "Set icd=<nv-vk64.json> or update the AMD driver.",
+                        "OK",
+                        f"works with the NVIDIA ICD {candidate}; "
+                        f"set icd={candidate} in config.txt",
                     )
                 )
                 return results

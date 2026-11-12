@@ -183,7 +183,7 @@ function New-Fixtures {
     return @($clip, $subs, $odd)
 }
 
-clear
+Clear-Host
 $fixtures = New-Fixtures
 foreach ($fixture in $fixtures) {
     $name = [IO.Path]::GetFileNameWithoutExtension($fixture)

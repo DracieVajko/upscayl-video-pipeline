@@ -1,7 +1,19 @@
+import re
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+
+def package_version() -> str:
+    """Read the canonical version from the package source."""
+    source = (Path(__file__).resolve().parents[1] / "src" / "upscayl_video" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', source, re.MULTILINE)
+    if not match:
+        raise AssertionError("no __version__ found in src/upscayl_video/__init__.py")
+    return match.group(1)
 
 
 class TestLaunchers(unittest.TestCase):
@@ -16,7 +28,16 @@ class TestLaunchers(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("0.3.3", result.stdout)
+        self.assertIn(package_version(), result.stdout)
+
+    def test_all_runtimes_share_one_version(self):
+        """V1, V2 PowerShell and V2 bash must declare the same version."""
+        root = Path(__file__).resolve().parents[1]
+        version = package_version()
+        powershell = (root / "v2" / "windows" / "UpscaylVideo.ps1").read_text(encoding="utf-8-sig")
+        bash = (root / "v2" / "unix" / "upscayl-video.sh").read_text(encoding="utf-8")
+        self.assertIn(f"$script:V2Version = '{version}'", powershell)
+        self.assertIn(f'UVP_VERSION="{version}"', bash)
 
     @unittest.skipUnless(sys.platform.startswith("win"), "Windows batch test")
     def test_batch_exit_codes(self):

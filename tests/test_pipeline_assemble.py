@@ -4,13 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.factories import make_media_info
 from upscayl_video.config import load_config
 from upscayl_video.encode import EncodeOptions, EncoderChoice
 from upscayl_video.errors import CommandError, EncodeError, ValidationError
 from upscayl_video.job import Job
 from upscayl_video.pipeline import _resolve_output_path, resolve_jobs, run_assemble
 from upscayl_video.util import Logger
-from tests.factories import make_media_info
 
 
 class TestResolveJobs(unittest.TestCase):

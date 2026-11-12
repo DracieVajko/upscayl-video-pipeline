@@ -109,7 +109,7 @@ def parse_available_encoders(ffmpeg: Path) -> set[str]:
     if cached is not None:
         return cached
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             [str(ffmpeg_path), "-hide_banner", "-encoders"],
             text=True,
             encoding="utf-8",

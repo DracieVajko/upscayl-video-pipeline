@@ -8,13 +8,11 @@ from .config import Config
 from .doctor import run_doctor
 from .encode import PRESETS, EncodeOptions
 from .errors import PipelineError
-from .probe import probe_media
-from .upscayl import discover_upscayl, list_models
 from .pipeline import (
-    find_jobs,
     RunOptions,
     SplitOptions,
     UpscaleOptions,
+    find_jobs,
     resolve_inputs,
     resolve_jobs,
     run_all,
@@ -24,6 +22,8 @@ from .pipeline import (
     run_status,
     run_upscale,
 )
+from .probe import probe_media
+from .upscayl import discover_upscayl, list_models
 from .util import Logger
 
 

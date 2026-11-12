@@ -6,7 +6,6 @@ from pathlib import Path
 from upscayl_video.config import DEFAULTS, load_config
 from upscayl_video.errors import DependencyError, ValidationError
 
-
 FAKE_FFMPEG = Path(sys.executable)
 
 

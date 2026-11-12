@@ -3,10 +3,10 @@ import time
 import unittest
 from pathlib import Path
 
+from tests.factories import make_media_info
 from upscayl_video.errors import ValidationError
 from upscayl_video.job import Job, find_jobs, read_kv, write_kv
 from upscayl_video.util import Logger
-from tests.factories import make_media_info
 
 
 class TestKvFiles(unittest.TestCase):

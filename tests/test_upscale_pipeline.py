@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from upscayl_video.config import load_config
+from upscayl_video.errors import ValidationError
 from upscayl_video.job import Job
 from upscayl_video.pipeline import UpscaleOptions, run_upscale
 from upscayl_video.util import Logger
@@ -53,7 +54,7 @@ class TestUpscalePipeline(unittest.TestCase):
         upscale.assert_called_once()
 
     def test_missing_model_is_rejected(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             run_upscale(
                 [self.job],
                 self.cfg,
